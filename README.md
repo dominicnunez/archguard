@@ -14,6 +14,9 @@ gomodguard check --dir /path/to/repo --config /path/to/repo/.gomodguard.yaml
 
 By default, `gomodguard check` looks for one of:
 
+- `gomodguard.yaml`
+- `gomodguard.yml`
+- `gomodguard.json`
 - `.gomodguard.yaml`
 - `.gomodguard.yml`
 - `.gomodguard.json`

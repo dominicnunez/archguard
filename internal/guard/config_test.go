@@ -61,3 +61,23 @@ func TestLoadConfigJSON(t *testing.T) {
 		t.Fatalf("PackagePatterns() = %v; want [./internal/...]", got)
 	}
 }
+
+func TestFindConfigPrefersNonDotConfig(t *testing.T) {
+	dir := t.TempDir()
+	nonDot := filepath.Join(dir, "gomodguard.yml")
+	dot := filepath.Join(dir, ".gomodguard.yaml")
+	if err := os.WriteFile(nonDot, []byte("version: 1\npackages:\n  root: example.com/app\n"), 0o600); err != nil {
+		t.Fatalf("write non-dot config: %v", err)
+	}
+	if err := os.WriteFile(dot, []byte("version: 1\npackages:\n  root: example.com/app\n"), 0o600); err != nil {
+		t.Fatalf("write dot config: %v", err)
+	}
+
+	got, err := FindConfig(dir)
+	if err != nil {
+		t.Fatalf("FindConfig() error = %v", err)
+	}
+	if got != nonDot {
+		t.Fatalf("FindConfig() = %q; want %q", got, nonDot)
+	}
+}

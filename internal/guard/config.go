@@ -96,7 +96,14 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func FindConfig(dir string) (string, error) {
-	for _, name := range []string{".gomodguard.yaml", ".gomodguard.yml", ".gomodguard.json"} {
+	for _, name := range []string{
+		"gomodguard.yaml",
+		"gomodguard.yml",
+		"gomodguard.json",
+		".gomodguard.yaml",
+		".gomodguard.yml",
+		".gomodguard.json",
+	} {
 		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); err == nil {
 			return path, nil
