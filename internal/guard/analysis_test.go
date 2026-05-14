@@ -101,6 +101,35 @@ func TestCheckProfilesFindsBroadPortsSurfaces(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsThinAdapters(t *testing.T) {
+	dir := writeThinAdapterFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	embeddedViolation, ok := violationByRule(violations, ruleAdapterEmbedsForeignPort)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleAdapterEmbedsForeignPort, violations)
+	}
+	if embeddedViolation.To != "internal/token/ports.Repository" {
+		t.Fatalf("embedded port To = %q; want internal/token/ports.Repository", embeddedViolation.To)
+	}
+	forwardingViolation, ok := violationByRule(violations, ruleThinAdapterForwarding)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleThinAdapterForwarding, violations)
+	}
+	if forwardingViolation.To != fmt.Sprint(minThinAdapterForwarders) {
+		t.Fatalf("forwarding To = %q; want %d", forwardingViolation.To, minThinAdapterForwarders)
+	}
+}
+
 func writeExternalTypeFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -166,6 +195,46 @@ func writeBroadPortsFixture(t *testing.T) string {
 	return dir
 }
 
+func writeThinAdapterFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/token/ports/ports.go", `package ports
+
+import "context"
+
+type Repository interface {
+	Count(ctx context.Context, wallet string) (int, error)
+	CountBatch(ctx context.Context, wallets []string) (map[string]int, error)
+}
+`)
+	writeTestFile(t, dir, "internal/creator/adapters/token/source.go", `package token
+
+import (
+	"context"
+
+	tokenports "example.com/app/internal/token/ports"
+)
+
+type Source struct {
+	repo sourceRepository
+}
+
+type sourceRepository interface {
+	tokenports.Repository
+}
+
+func (s *Source) Count(ctx context.Context, wallet string) (int, error) {
+	return s.repo.Count(ctx, wallet)
+}
+
+func (s *Source) CountBatch(ctx context.Context, wallets []string) (map[string]int, error) {
+	return s.repo.CountBatch(ctx, wallets)
+}
+`)
+	return dir
+}
+
 func violationByRule(violations []Violation, rule string) (Violation, bool) {
 	for _, violation := range violations {
 		if violation.Rule == rule {
@@ -180,10 +249,12 @@ func externalTypeConfig() Config {
 		Packages: PackagesConfig{Root: "example.com/app"},
 		Modules: []ModuleConfig{
 			{Name: "creator", Path: "internal/creator"},
+			{Name: "token", Path: "internal/token"},
 		},
 		Layers: []LayerConfig{
 			{Name: "app", Path: "app"},
 			{Name: portsLayerName, Path: portsLayerName},
+			{Name: adaptersLayerName, Path: adaptersLayerName},
 		},
 		Analysis: AnalysisConfig{Profiles: []string{profileModularMonolith}},
 	}

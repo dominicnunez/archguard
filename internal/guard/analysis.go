@@ -13,14 +13,18 @@ import (
 )
 
 const (
-	profileModularMonolith      = "modular-monolith"
-	ruleExportedAPIExternalType = "exported-api-external-type"
-	ruleProtocolDTOInPorts      = "protocol-dto-in-ports"
-	ruleBroadPortsFile          = "broad-ports-file"
-	ruleBroadPortsInterface     = "broad-ports-interface"
-	portsLayerName              = "ports"
-	maxPortsInterfacesPerFile   = 8
-	maxPortsInterfaceMethods    = 8
+	profileModularMonolith       = "modular-monolith"
+	ruleExportedAPIExternalType  = "exported-api-external-type"
+	ruleProtocolDTOInPorts       = "protocol-dto-in-ports"
+	ruleBroadPortsFile           = "broad-ports-file"
+	ruleBroadPortsInterface      = "broad-ports-interface"
+	ruleAdapterEmbedsForeignPort = "adapter-embeds-foreign-port"
+	ruleThinAdapterForwarding    = "thin-adapter-forwarding"
+	portsLayerName               = "ports"
+	adaptersLayerName            = "adapters"
+	maxPortsInterfacesPerFile    = 8
+	maxPortsInterfaceMethods     = 8
+	minThinAdapterForwarders     = 2
 )
 
 var protocolTagKeys = []string{"json", "xml", "yaml", "form", "protobuf"}
@@ -53,6 +57,7 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 			violations = append(violations, checkExportedAPIExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkProtocolDTOsInPorts(cfg, pkgs)...)
 			violations = append(violations, checkBroadPortsSurfaces(cfg, pkgs)...)
+			violations = append(violations, checkThinAdapters(cfg, pkgs)...)
 		default:
 			return nil, fmt.Errorf("unknown analysis profile %q", profile)
 		}
@@ -123,6 +128,22 @@ func checkBroadPortsSurfaces(cfg Config, pkgs []LoadedPackage) []Violation {
 		for _, file := range pkg.Syntax {
 			violations = append(violations, broadPortsFileViolations(pkg, file)...)
 		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkThinAdapters(cfg Config, pkgs []LoadedPackage) []Violation {
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if info.Layer != adaptersLayerName {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			violations = append(violations, adapterEmbeddedForeignPortViolations(cfg, pkg, info, file)...)
+		}
+		violations = append(violations, thinAdapterForwardingViolations(pkg, adapterForeignPortBackedFields(cfg, pkg, info))...)
 	}
 	sortViolations(violations)
 	return violations
@@ -251,6 +272,178 @@ func broadPortsFileViolations(pkg LoadedPackage, file *ast.File) []Violation {
 	return violations
 }
 
+func adapterEmbeddedForeignPortViolations(cfg Config, pkg LoadedPackage, adapterInfo packageInfo, file *ast.File) []Violation {
+	if pkg.TypesInfo == nil {
+		return nil
+	}
+	var violations []Violation
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			interfaceType, ok := typeSpec.Type.(*ast.InterfaceType)
+			if !ok {
+				continue
+			}
+			for _, embedded := range embeddedForeignPorts(cfg, pkg, adapterInfo, interfaceType) {
+				violations = append(violations, Violation{
+					Rule:    ruleAdapterEmbedsForeignPort,
+					From:    positionString(pkg, embedded.position),
+					To:      embedded.info.RelPath + "." + embedded.typeName,
+					Message: "adapter interface embeds a foreign module ports interface instead of declaring the local seam",
+				})
+			}
+		}
+	}
+	return violations
+}
+
+type embeddedForeignPort struct {
+	position token.Pos
+	info     packageInfo
+	typeName string
+}
+
+func embeddedForeignPorts(cfg Config, pkg LoadedPackage, adapterInfo packageInfo, interfaceType *ast.InterfaceType) []embeddedForeignPort {
+	if pkg.TypesInfo == nil || interfaceType.Methods == nil {
+		return nil
+	}
+	var embedded []embeddedForeignPort
+	for _, field := range interfaceType.Methods.List {
+		if len(field.Names) > 0 {
+			continue
+		}
+		packagePath, typeName := selectorTypePackage(pkg, field.Type)
+		if packagePath == "" {
+			continue
+		}
+		embeddedInfo := classifyPackage(cfg, packagePath)
+		if !embeddedInfo.Internal || embeddedInfo.Layer != portsLayerName || embeddedInfo.Module == "" || embeddedInfo.Module == adapterInfo.Module {
+			continue
+		}
+		embedded = append(embedded, embeddedForeignPort{position: field.Pos(), info: embeddedInfo, typeName: typeName})
+	}
+	return embedded
+}
+
+func adapterForeignPortBackedFields(cfg Config, pkg LoadedPackage, adapterInfo packageInfo) map[forwardingKey]struct{} {
+	interfaceNames := make(map[string]struct{})
+	for _, file := range pkg.Syntax {
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || typeSpec.Name == nil {
+					continue
+				}
+				interfaceType, ok := typeSpec.Type.(*ast.InterfaceType)
+				if !ok || len(embeddedForeignPorts(cfg, pkg, adapterInfo, interfaceType)) == 0 {
+					continue
+				}
+				interfaceNames[typeSpec.Name.Name] = struct{}{}
+			}
+		}
+	}
+	if len(interfaceNames) == 0 {
+		return nil
+	}
+
+	fields := make(map[forwardingKey]struct{})
+	for _, file := range pkg.Syntax {
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || typeSpec.Name == nil {
+					continue
+				}
+				structType, ok := typeSpec.Type.(*ast.StructType)
+				if !ok || structType.Fields == nil {
+					continue
+				}
+				for _, field := range structType.Fields.List {
+					fieldType := fieldTypeName(field.Type)
+					if _, ok := interfaceNames[fieldType]; !ok {
+						continue
+					}
+					for _, name := range field.Names {
+						if name != nil {
+							fields[forwardingKey{receiver: typeSpec.Name.Name, field: name.Name}] = struct{}{}
+						}
+					}
+				}
+			}
+		}
+	}
+	return fields
+}
+
+type forwardingKey struct {
+	receiver string
+	field    string
+}
+
+type forwardingGroup struct {
+	position token.Pos
+	count    int
+}
+
+func thinAdapterForwardingViolations(pkg LoadedPackage, eligibleFields map[forwardingKey]struct{}) []Violation {
+	if len(eligibleFields) == 0 {
+		return nil
+	}
+	groups := make(map[forwardingKey]forwardingGroup)
+	for _, file := range pkg.Syntax {
+		for _, decl := range file.Decls {
+			funcDecl, ok := decl.(*ast.FuncDecl)
+			if !ok || funcDecl.Name == nil {
+				continue
+			}
+			receiverType := receiverTypeName(funcDecl)
+			fieldName, ok := forwardedReceiverField(funcDecl)
+			if receiverType == "" || !ok {
+				continue
+			}
+			key := forwardingKey{receiver: receiverType, field: fieldName}
+			if _, ok := eligibleFields[key]; !ok {
+				continue
+			}
+			group := groups[key]
+			if group.position == token.NoPos {
+				group.position = funcDecl.Name.Pos()
+			}
+			group.count++
+			groups[key] = group
+		}
+	}
+
+	var violations []Violation
+	for key, group := range groups {
+		if group.count < minThinAdapterForwarders {
+			continue
+		}
+		violations = append(violations, Violation{
+			Rule:    ruleThinAdapterForwarding,
+			From:    positionString(pkg, group.position),
+			To:      strconv.Itoa(group.count),
+			Message: fmt.Sprintf("adapter receiver %q directly forwards multiple methods to field %q", key.receiver, key.field),
+		})
+	}
+	return violations
+}
+
 func interfaceMethodCount(interfaceType *ast.InterfaceType) int {
 	if interfaceType.Methods == nil {
 		return 0
@@ -260,6 +453,134 @@ func interfaceMethodCount(interfaceType *ast.InterfaceType) int {
 		count += len(field.Names)
 	}
 	return count
+}
+
+func selectorTypePackage(pkg LoadedPackage, expr ast.Expr) (string, string) {
+	selector, ok := unparen(expr).(*ast.SelectorExpr)
+	if !ok || selector.Sel == nil || pkg.TypesInfo == nil {
+		return "", ""
+	}
+	obj := pkg.TypesInfo.Uses[selector.Sel]
+	if obj == nil || obj.Pkg() == nil {
+		return "", ""
+	}
+	return obj.Pkg().Path(), selector.Sel.Name
+}
+
+func fieldTypeName(expr ast.Expr) string {
+	typeExpr := unparen(expr)
+	if star, ok := typeExpr.(*ast.StarExpr); ok {
+		typeExpr = unparen(star.X)
+	}
+	ident, ok := typeExpr.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return ident.Name
+}
+
+func receiverTypeName(funcDecl *ast.FuncDecl) string {
+	if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+		return ""
+	}
+	typeExpr := unparen(funcDecl.Recv.List[0].Type)
+	if star, ok := typeExpr.(*ast.StarExpr); ok {
+		typeExpr = unparen(star.X)
+	}
+	ident, ok := typeExpr.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return ident.Name
+}
+
+func forwardedReceiverField(funcDecl *ast.FuncDecl) (string, bool) {
+	receiverName := receiverIdentName(funcDecl)
+	if receiverName == "" || funcDecl.Body == nil || funcDecl.Name == nil {
+		return "", false
+	}
+	call, ok := singleCallBody(funcDecl.Body)
+	if !ok || !argumentsPassThrough(funcDecl.Type.Params, call.Args) {
+		return "", false
+	}
+	methodSelector, ok := unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok || methodSelector.Sel == nil || methodSelector.Sel.Name != funcDecl.Name.Name {
+		return "", false
+	}
+	fieldSelector, ok := unparen(methodSelector.X).(*ast.SelectorExpr)
+	if !ok || fieldSelector.Sel == nil {
+		return "", false
+	}
+	base, ok := unparen(fieldSelector.X).(*ast.Ident)
+	if !ok || base.Name != receiverName {
+		return "", false
+	}
+	return fieldSelector.Sel.Name, true
+}
+
+func receiverIdentName(funcDecl *ast.FuncDecl) string {
+	if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 || len(funcDecl.Recv.List[0].Names) == 0 {
+		return ""
+	}
+	return funcDecl.Recv.List[0].Names[0].Name
+}
+
+func singleCallBody(body *ast.BlockStmt) (*ast.CallExpr, bool) {
+	if body == nil || len(body.List) != 1 {
+		return nil, false
+	}
+	switch stmt := body.List[0].(type) {
+	case *ast.ReturnStmt:
+		if len(stmt.Results) != 1 {
+			return nil, false
+		}
+		call, ok := unparen(stmt.Results[0]).(*ast.CallExpr)
+		return call, ok
+	case *ast.ExprStmt:
+		call, ok := unparen(stmt.X).(*ast.CallExpr)
+		return call, ok
+	default:
+		return nil, false
+	}
+}
+
+func argumentsPassThrough(params *ast.FieldList, args []ast.Expr) bool {
+	paramNames := parameterNames(params)
+	if len(paramNames) != len(args) {
+		return false
+	}
+	for i, arg := range args {
+		ident, ok := unparen(arg).(*ast.Ident)
+		if !ok || ident.Name != paramNames[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func parameterNames(params *ast.FieldList) []string {
+	if params == nil {
+		return nil
+	}
+	var names []string
+	for _, field := range params.List {
+		for _, name := range field.Names {
+			if name != nil {
+				names = append(names, name.Name)
+			}
+		}
+	}
+	return names
+}
+
+func unparen(expr ast.Expr) ast.Expr {
+	for {
+		paren, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			return expr
+		}
+		expr = paren.X
+	}
 }
 
 func protocolTags(structType *ast.StructType) []string {

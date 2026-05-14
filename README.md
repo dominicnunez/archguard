@@ -92,5 +92,6 @@ analysis:
 - `modular-monolith` reports exported `ports` APIs that reference non-stdlib external dependency types.
 - `modular-monolith` reports exported `ports` structs with protocol field tags such as `json`.
 - `modular-monolith` reports broad `ports` files and interfaces with large method surfaces.
+- `modular-monolith` reports thin adapters that embed foreign ports or only forward calls.
 
 Path patterns support `*`, `?`, and `**`.
