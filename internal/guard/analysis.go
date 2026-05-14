@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,10 @@ const (
 	ruleBroadPortsInterface      = "broad-ports-interface"
 	ruleAdapterEmbedsForeignPort = "adapter-embeds-foreign-port"
 	ruleThinAdapterForwarding    = "thin-adapter-forwarding"
+	ruleCompositionMutation      = "composition-root-mutation"
+	ruleCompositionSetterCall    = "composition-root-setter-call"
+	ruleCompositionDomainConvert = "composition-root-domain-conversion"
+	ruleSQLCrossModuleTable      = "sql-cross-module-table"
 	portsLayerName               = "ports"
 	adaptersLayerName            = "adapters"
 	maxPortsInterfacesPerFile    = 8
@@ -27,7 +32,10 @@ const (
 	minThinAdapterForwarders     = 2
 )
 
-var protocolTagKeys = []string{"json", "xml", "yaml", "form", "protobuf"}
+var (
+	protocolTagKeys = []string{"json", "xml", "yaml", "form", "protobuf"}
+	sqlTablePattern = regexp.MustCompile(`(?i)\b(?:from|join|update|into|truncate(?:\s+table)?)\s+([a-zA-Z_][a-zA-Z0-9_\.]*)`)
+)
 
 type externalTypeRef struct {
 	PackagePath string
@@ -58,6 +66,8 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 			violations = append(violations, checkProtocolDTOsInPorts(cfg, pkgs)...)
 			violations = append(violations, checkBroadPortsSurfaces(cfg, pkgs)...)
 			violations = append(violations, checkThinAdapters(cfg, pkgs)...)
+			violations = append(violations, checkCompositionRootPatterns(cfg, pkgs)...)
+			violations = append(violations, checkSQLTableOwnership(cfg, pkgs)...)
 		default:
 			return nil, fmt.Errorf("unknown analysis profile %q", profile)
 		}
@@ -149,12 +159,187 @@ func checkThinAdapters(cfg Config, pkgs []LoadedPackage) []Violation {
 	return violations
 }
 
+func checkCompositionRootPatterns(cfg Config, pkgs []LoadedPackage) []Violation {
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if pkg.Test || !isCompositionRootPackage(info) || pkg.TypesInfo == nil {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			violations = append(violations, compositionRootFileViolations(cfg, pkg, info, file)...)
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkSQLTableOwnership(cfg Config, pkgs []LoadedPackage) []Violation {
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if info.Layer != adaptersLayerName || !strings.Contains(info.RelPath, "/adapters/postgres") || info.Module == "" {
+			continue
+		}
+		violations = append(violations, sqlTableOwnershipViolations(cfg, pkg, info)...)
+	}
+	sortViolations(violations)
+	return violations
+}
+
 func classifyLoadedPackage(cfg Config, pkg LoadedPackage) packageInfo {
 	return classifyEdgeFrom(cfg, ImportEdge{
 		From:        pkg.ImportPath,
 		FromRelPath: pkg.RelPath,
 		Test:        pkg.Test,
 	})
+}
+
+func isCompositionRootPackage(info packageInfo) bool {
+	return pathHasSegment(info.RelPath, "bootstrap") || info.RelPath == "internal/api" || strings.HasPrefix(info.RelPath, "cmd/")
+}
+
+func pathHasSegment(path, segment string) bool {
+	for _, part := range strings.Split(path, "/") {
+		if part == segment {
+			return true
+		}
+	}
+	return false
+}
+
+func compositionRootFileViolations(cfg Config, pkg LoadedPackage, info packageInfo, file *ast.File) []Violation {
+	var violations []Violation
+	for _, decl := range file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Body == nil {
+			continue
+		}
+		paramNames := funcParameterNameSet(funcDecl)
+		ast.Inspect(funcDecl.Body, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.AssignStmt:
+				violations = append(violations, compositionRootAssignmentViolations(pkg, n, paramNames)...)
+			case *ast.CallExpr:
+				if violation, ok := compositionSetterCallViolation(cfg, pkg, n); ok {
+					violations = append(violations, violation)
+				}
+				if violation, ok := compositionDomainConversionViolation(cfg, pkg, info, n); ok {
+					violations = append(violations, violation)
+				}
+			}
+			return true
+		})
+	}
+	return violations
+}
+
+func compositionRootAssignmentViolations(pkg LoadedPackage, assign *ast.AssignStmt, paramNames map[string]struct{}) []Violation {
+	if len(paramNames) == 0 {
+		return nil
+	}
+	var violations []Violation
+	for _, lhs := range assign.Lhs {
+		selector, ok := unparen(lhs).(*ast.SelectorExpr)
+		if !ok {
+			continue
+		}
+		root := selectorRootIdent(selector)
+		if root == "" {
+			continue
+		}
+		if _, ok := paramNames[root]; !ok {
+			continue
+		}
+		violations = append(violations, Violation{
+			Rule:    ruleCompositionMutation,
+			From:    positionString(pkg, selector.Pos()),
+			To:      root + "." + selector.Sel.Name,
+			Message: "composition-root function mutates a collaborator after construction",
+		})
+	}
+	return violations
+}
+
+func compositionSetterCallViolation(cfg Config, pkg LoadedPackage, call *ast.CallExpr) (Violation, bool) {
+	selector, ok := unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok || selector.Sel == nil || !isSetterName(selector.Sel.Name) || pkg.TypesInfo == nil {
+		return Violation{}, false
+	}
+	obj, ok := pkg.TypesInfo.Uses[selector.Sel].(*types.Func)
+	if !ok || obj.Pkg() == nil || !isInternalPackage(cfg, obj.Pkg().Path()) {
+		return Violation{}, false
+	}
+	return Violation{
+		Rule:    ruleCompositionSetterCall,
+		From:    positionString(pkg, selector.Sel.Pos()),
+		To:      obj.Pkg().Path() + "." + obj.Name(),
+		Message: "composition root calls a Set-style method instead of passing dependencies at construction",
+	}, true
+}
+
+func compositionDomainConversionViolation(cfg Config, pkg LoadedPackage, info packageInfo, call *ast.CallExpr) (Violation, bool) {
+	typeName := callTypeName(pkg, call)
+	if typeName == nil || typeName.Pkg() == nil {
+		return Violation{}, false
+	}
+	target := classifyPackage(cfg, typeName.Pkg().Path())
+	if !target.Internal || target.Layer != "domain" || target.Module == "" || target.Module == info.Module {
+		return Violation{}, false
+	}
+	return Violation{
+		Rule:    ruleCompositionDomainConvert,
+		From:    positionString(pkg, call.Fun.Pos()),
+		To:      target.RelPath + "." + typeName.Name(),
+		Message: "composition root converts values into a domain type owned by another module",
+	}, true
+}
+
+func sqlTableOwnershipViolations(cfg Config, pkg LoadedPackage, info packageInfo) []Violation {
+	type seenKey struct {
+		file  string
+		table string
+	}
+	seen := make(map[seenKey]struct{})
+	var violations []Violation
+	for _, file := range pkg.Syntax {
+		ast.Inspect(file, func(node ast.Node) bool {
+			lit, ok := node.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			text, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			if !looksLikeSQL(text) {
+				return true
+			}
+			for _, table := range sqlTables(text) {
+				owner := tableOwnerModule(cfg, table)
+				if owner == "" || owner == info.Module {
+					continue
+				}
+				filename := ""
+				if pkg.Fset != nil {
+					filename = filepath.ToSlash(pkg.Fset.Position(lit.Pos()).Filename)
+				}
+				key := seenKey{file: filename, table: table}
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				violations = append(violations, Violation{
+					Rule:    ruleSQLCrossModuleTable,
+					From:    positionString(pkg, lit.Pos()),
+					To:      table + " (" + owner + ")",
+					Message: "postgres adapter SQL references a table inferred to belong to another module",
+				})
+			}
+			return true
+		})
+	}
+	return violations
 }
 
 func exportedDeclExternalTypeViolations(cfg Config, pkg LoadedPackage, decl ast.Decl) []Violation {
@@ -571,6 +756,136 @@ func parameterNames(params *ast.FieldList) []string {
 		}
 	}
 	return names
+}
+
+func funcParameterNameSet(funcDecl *ast.FuncDecl) map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, name := range parameterNames(funcDecl.Type.Params) {
+		names[name] = struct{}{}
+	}
+	return names
+}
+
+func selectorRootIdent(selector *ast.SelectorExpr) string {
+	var expr ast.Expr = selector
+	for {
+		s, ok := unparen(expr).(*ast.SelectorExpr)
+		if !ok {
+			break
+		}
+		expr = s.X
+	}
+	ident, ok := unparen(expr).(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return ident.Name
+}
+
+func isSetterName(name string) bool {
+	return len(name) > len("Set") && strings.HasPrefix(name, "Set") && name[len("Set")] >= 'A' && name[len("Set")] <= 'Z'
+}
+
+func isInternalPackage(cfg Config, packagePath string) bool {
+	root := strings.TrimSuffix(cfg.Packages.Root, "/")
+	return packagePath == root || strings.HasPrefix(packagePath, root+"/")
+}
+
+func callTypeName(pkg LoadedPackage, call *ast.CallExpr) *types.TypeName {
+	if pkg.TypesInfo == nil {
+		return nil
+	}
+	switch fun := unparen(call.Fun).(type) {
+	case *ast.SelectorExpr:
+		if fun.Sel == nil {
+			return nil
+		}
+		obj, _ := pkg.TypesInfo.Uses[fun.Sel].(*types.TypeName)
+		return obj
+	case *ast.Ident:
+		obj, _ := pkg.TypesInfo.Uses[fun].(*types.TypeName)
+		return obj
+	default:
+		return nil
+	}
+}
+
+func sqlTables(sql string) []string {
+	seen := make(map[string]struct{})
+	var tables []string
+	for _, match := range sqlTablePattern.FindAllStringSubmatch(sql, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		table := normalizeSQLTable(match[1])
+		if table == "" {
+			continue
+		}
+		if _, ok := seen[table]; ok {
+			continue
+		}
+		seen[table] = struct{}{}
+		tables = append(tables, table)
+	}
+	return tables
+}
+
+func looksLikeSQL(text string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(text))
+	if upper == "" {
+		return false
+	}
+	if strings.HasPrefix(upper, "TRUNCATE ") {
+		return true
+	}
+	for _, prefix := range []string{"SELECT ", "INSERT ", "UPDATE ", "DELETE ", "WITH "} {
+		if !strings.HasPrefix(upper, prefix) {
+			continue
+		}
+		return strings.Contains(upper, " FROM ") || strings.Contains(upper, " JOIN ") || strings.Contains(upper, " INTO ") || strings.Contains(upper, " SET ") || strings.Contains(upper, " WHERE ") || strings.Contains(upper, "$1")
+	}
+	return false
+}
+
+func normalizeSQLTable(table string) string {
+	table = strings.Trim(strings.ToLower(table), `". ,;()\n\t`)
+	if table == "" {
+		return ""
+	}
+	if before, _, ok := strings.Cut(table, "("); ok {
+		table = before
+	}
+	parts := strings.Split(table, ".")
+	return strings.Trim(parts[len(parts)-1], `". ,;()`)
+}
+
+func tableOwnerModule(cfg Config, table string) string {
+	for _, module := range cfg.Modules {
+		if tableMatchesModule(table, module.Name) {
+			return module.Name
+		}
+	}
+	return ""
+}
+
+func tableMatchesModule(table, moduleName string) bool {
+	moduleName = strings.ToLower(moduleName)
+	for _, variant := range []string{moduleName, pluralModuleName(moduleName)} {
+		if table == variant || strings.HasPrefix(table, variant+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+func pluralModuleName(moduleName string) string {
+	if strings.HasSuffix(moduleName, "s") {
+		return moduleName
+	}
+	if strings.HasSuffix(moduleName, "y") {
+		return strings.TrimSuffix(moduleName, "y") + "ies"
+	}
+	return moduleName + "s"
 }
 
 func unparen(expr ast.Expr) ast.Expr {

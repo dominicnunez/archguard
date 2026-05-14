@@ -93,5 +93,6 @@ analysis:
 - `modular-monolith` reports exported `ports` structs with protocol field tags such as `json`.
 - `modular-monolith` reports broad `ports` files and interfaces with large method surfaces.
 - `modular-monolith` reports thin adapters that embed foreign ports or only forward calls.
+- `modular-monolith` reports composition-root mutation, Set-style wiring, domain conversions, and cross-module SQL table references.
 
 Path patterns support `*`, `?`, and `**`.

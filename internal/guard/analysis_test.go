@@ -130,6 +130,48 @@ func TestCheckProfilesFindsThinAdapters(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsCompositionRootPatterns(t *testing.T) {
+	dir := writeCompositionRootFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	for _, rule := range []string{ruleCompositionMutation, ruleCompositionSetterCall, ruleCompositionDomainConvert} {
+		if _, ok := violationByRule(violations, rule); !ok {
+			t.Fatalf("CheckLoadedPackages() missing %s violation: %v", rule, violations)
+		}
+	}
+}
+
+func TestCheckProfilesFindsCrossModuleSQLTables(t *testing.T) {
+	dir := writeSQLTableFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleSQLCrossModuleTable)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleSQLCrossModuleTable, violations)
+	}
+	if violation.To != "creator_stats (creator)" {
+		t.Fatalf("SQL table To = %q; want creator_stats (creator)", violation.To)
+	}
+}
+
 func writeExternalTypeFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -235,6 +277,56 @@ func (s *Source) CountBatch(ctx context.Context, wallets []string) (map[string]i
 	return dir
 }
 
+func writeCompositionRootFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/token/domain/domain.go", "package domain\n\ntype Venue string\n")
+	writeTestFile(t, dir, "internal/token/app/service.go", `package app
+
+type Service struct {
+	notifier any
+}
+
+func (s *Service) SetNotifier(notifier any) {
+	s.notifier = notifier
+}
+`)
+	writeTestFile(t, dir, "internal/bootstrap/bootstrap.go", `package bootstrap
+
+import (
+	tokenapp "example.com/app/internal/token/app"
+	tokendomain "example.com/app/internal/token/domain"
+)
+
+type Server struct {
+	limiter any
+}
+
+func RegisterRoutes(server *Server) {
+	server.limiter = struct{}{}
+}
+
+func Build(service *tokenapp.Service, raw string) {
+	service.SetNotifier(struct{}{})
+	_ = tokendomain.Venue(raw)
+}
+`)
+	return dir
+}
+
+func writeSQLTableFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/token/adapters/postgres/repo.go", `package postgres
+
+const localQuery = "SELECT * FROM tokens"
+const foreignQuery = "SELECT * FROM creator_stats WHERE wallet_address = $1"
+`)
+	return dir
+}
+
 func violationByRule(violations []Violation, rule string) (Violation, bool) {
 	for _, violation := range violations {
 		if violation.Rule == rule {
@@ -252,6 +344,7 @@ func externalTypeConfig() Config {
 			{Name: "token", Path: "internal/token"},
 		},
 		Layers: []LayerConfig{
+			{Name: "domain", Path: "domain"},
 			{Name: "app", Path: "app"},
 			{Name: portsLayerName, Path: portsLayerName},
 			{Name: adaptersLayerName, Path: adaptersLayerName},
