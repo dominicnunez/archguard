@@ -27,7 +27,7 @@ type packageInfo struct {
 func Check(cfg Config, edges []ImportEdge) []Violation {
 	var violations []Violation
 	for _, edge := range edges {
-		from := classifyPackage(cfg, edge.From)
+		from := classifyEdgeFrom(cfg, edge)
 		to := classifyPackage(cfg, edge.To)
 		if !from.Internal || !to.Internal || ignored(cfg, from) || ignored(cfg, to) || allowed(cfg, from, to) {
 			continue
@@ -56,6 +56,31 @@ func Check(cfg Config, edges []ImportEdge) []Violation {
 		return violations[i].To < violations[j].To
 	})
 	return violations
+}
+
+func classifyEdgeFrom(cfg Config, edge ImportEdge) packageInfo {
+	info := classifyPackage(cfg, edge.From)
+	if !edge.Test || edge.FromRelPath == "" {
+		return info
+	}
+	fromRel := strings.Trim(edge.FromRelPath, "/")
+	if fromRel == "" || fromRel == "." {
+		return info
+	}
+	info.RelPath = fromRel
+	info.Internal = true
+	module := longestMatchingModule(cfg.Modules, fromRel)
+	if module == nil {
+		info.Module = ""
+		info.Layer = ""
+		return info
+	}
+	info.Module = module.Name
+	modulePath := strings.Trim(module.Path, "/")
+	suffix := strings.TrimPrefix(fromRel, modulePath)
+	suffix = strings.TrimPrefix(suffix, "/")
+	info.Layer = matchingLayer(cfg.Layers, suffix)
+	return info
 }
 
 func classifyPackage(cfg Config, importPath string) packageInfo {

@@ -11,6 +11,18 @@ import (
 	"github.com/dominicnunez/gomodguard/internal/guard"
 )
 
+type stringListFlag []string
+
+func (f *stringListFlag) String() string { return strings.Join(*f, ",") }
+
+func (f *stringListFlag) Set(value string) error {
+	if value == "" {
+		return nil
+	}
+	*f = append(*f, value)
+	return nil
+}
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		if errors.Is(err, guard.ErrViolationsFound) {
@@ -43,6 +55,9 @@ func runCheck(args []string) error {
 	fs.SetOutput(os.Stderr)
 	configPath := fs.String("config", "", "path to .gomodguard.yaml, .gomodguard.yml, or .gomodguard.json")
 	dir := fs.String("dir", ".", "repository directory to analyze")
+	includeTests := fs.Bool("include-tests", false, "include Go test variants in import and analysis checks")
+	var cliProfiles stringListFlag
+	fs.Var(&cliProfiles, "profile", "enable a built-in analysis profile; may be repeated")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -66,12 +81,18 @@ func runCheck(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *includeTests {
+		cfg.Analysis.IncludeTests = true
+	}
+	if len(cliProfiles) > 0 {
+		cfg.Analysis.Profiles = append(cfg.Analysis.Profiles, cliProfiles...)
+	}
 	patterns := fs.Args()
 	if len(patterns) == 0 {
 		patterns = cfg.PackagePatterns()
 	}
 
-	edges, err := guard.LoadImportGraph(repoDir, patterns)
+	edges, err := guard.LoadImportGraphWithOptions(repoDir, patterns, guard.LoadOptions{IncludeTests: cfg.Analysis.IncludeTests})
 	if err != nil {
 		return err
 	}
@@ -99,7 +120,7 @@ func printUsage(out *os.File) {
 	usage := strings.TrimSpace(`gomodguard checks Go modular-monolith import boundaries.
 
 Usage:
-  gomodguard check [--config .gomodguard.yaml] [--dir .] [patterns...]
+  gomodguard check [--config .gomodguard.yaml] [--dir .] [--include-tests] [--profile name] [patterns...]
   gomodguard help`)
 	fmt.Fprintln(out, usage)
 }

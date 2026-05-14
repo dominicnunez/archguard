@@ -10,6 +10,7 @@ It is intentionally configuration-driven: the tool knows how to load a Go import
 gomodguard check
 gomodguard check --config .gomodguard.yaml
 gomodguard check --dir /path/to/repo --config /path/to/repo/.gomodguard.yaml
+gomodguard check --include-tests --profile modular-monolith
 ```
 
 By default, `gomodguard check` looks for one of:
@@ -68,11 +69,23 @@ allow:
     reason: composition root wires concrete repositories
 ```
 
+Optional analysis profiles enable generic AST/SQL checks without adding
+project-specific import rules:
+
+```yaml
+analysis:
+  include_tests: true
+  profiles:
+    - modular-monolith
+```
+
 ## Rule Model
 
 - `modules` identify bounded contexts by repository-relative path.
 - `layers` identify conventional subdirectories within modules.
 - `rules` select importers with `from`, then deny imports by target module, layer, or path.
 - `allow` entries are explicit exceptions for known migration seams.
+- `analysis.include_tests` includes Go test variants in import checks and profile checks.
+- `analysis.profiles` enables reusable built-in checks such as `modular-monolith`.
 
 Path patterns support `*`, `?`, and `**`.

@@ -19,6 +19,7 @@ type Config struct {
 	Rules    []RuleConfig   `json:"rules" yaml:"rules"`
 	Allow    []AllowConfig  `json:"allow" yaml:"allow"`
 	Ignore   []IgnoreConfig `json:"ignore" yaml:"ignore"`
+	Analysis AnalysisConfig `json:"analysis" yaml:"analysis"`
 }
 
 type PackagesConfig struct {
@@ -64,6 +65,11 @@ type AllowConfig struct {
 type IgnoreConfig struct {
 	Path   string `json:"path" yaml:"path"`
 	Reason string `json:"reason" yaml:"reason"`
+}
+
+type AnalysisConfig struct {
+	IncludeTests bool     `json:"include_tests" yaml:"include_tests"`
+	Profiles     []string `json:"profiles" yaml:"profiles"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -118,4 +124,10 @@ func (c Config) PackagePatterns() []string {
 	patterns := make([]string, len(c.Packages.Patterns))
 	copy(patterns, c.Packages.Patterns)
 	return patterns
+}
+
+func (c Config) AnalysisProfiles() []string {
+	profiles := make([]string, len(c.Analysis.Profiles))
+	copy(profiles, c.Analysis.Profiles)
+	return profiles
 }

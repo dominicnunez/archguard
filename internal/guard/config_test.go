@@ -24,6 +24,10 @@ rules:
       layer: app
     deny:
       modules: ["*"]
+analysis:
+  include_tests: true
+  profiles:
+    - modular-monolith
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -39,6 +43,12 @@ rules:
 	if got := cfg.PackagePatterns(); len(got) != 1 || got[0] != defaultPackagePattern {
 		t.Fatalf("PackagePatterns() = %v; want [%s]", got, defaultPackagePattern)
 	}
+	if !cfg.Analysis.IncludeTests {
+		t.Fatalf("analysis.include_tests = false; want true")
+	}
+	if got := cfg.AnalysisProfiles(); len(got) != 1 || got[0] != "modular-monolith" {
+		t.Fatalf("AnalysisProfiles() = %v; want [modular-monolith]", got)
+	}
 }
 
 func TestLoadConfigJSON(t *testing.T) {
@@ -47,7 +57,8 @@ func TestLoadConfigJSON(t *testing.T) {
 	data := []byte(`{
   "version": 1,
   "packages": {"root": "example.com/app", "patterns": ["./internal/..."]},
-  "modules": [{"name": "token", "path": "internal/token"}]
+  "modules": [{"name": "token", "path": "internal/token"}],
+  "analysis": {"include_tests": true, "profiles": ["modular-monolith"]}
 }`)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -59,6 +70,9 @@ func TestLoadConfigJSON(t *testing.T) {
 	}
 	if got := cfg.PackagePatterns(); len(got) != 1 || got[0] != "./internal/..." {
 		t.Fatalf("PackagePatterns() = %v; want [./internal/...]", got)
+	}
+	if !cfg.Analysis.IncludeTests {
+		t.Fatalf("analysis.include_tests = false; want true")
 	}
 }
 
