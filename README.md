@@ -90,5 +90,6 @@ analysis:
 - `analysis.include_tests` includes Go test variants in import checks and profile checks.
 - `analysis.profiles` enables reusable built-in checks such as `modular-monolith`.
 - `modular-monolith` reports exported `ports` APIs that reference non-stdlib external dependency types.
+- `modular-monolith` reports exported `ports` structs with protocol field tags such as `json`.
 
 Path patterns support `*`, `?`, and `**`.

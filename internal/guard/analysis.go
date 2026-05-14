@@ -6,15 +6,20 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 const (
 	profileModularMonolith      = "modular-monolith"
 	ruleExportedAPIExternalType = "exported-api-external-type"
+	ruleProtocolDTOInPorts      = "protocol-dto-in-ports"
 	portsLayerName              = "ports"
 )
+
+var protocolTagKeys = []string{"json", "xml", "yaml", "form", "protobuf"}
 
 type externalTypeRef struct {
 	PackagePath string
@@ -42,6 +47,7 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 		switch profile {
 		case profileModularMonolith:
 			violations = append(violations, checkExportedAPIExternalTypes(cfg, pkgs)...)
+			violations = append(violations, checkProtocolDTOsInPorts(cfg, pkgs)...)
 		default:
 			return nil, fmt.Errorf("unknown analysis profile %q", profile)
 		}
@@ -78,6 +84,23 @@ func checkExportedAPIExternalTypes(cfg Config, pkgs []LoadedPackage) []Violation
 		for _, file := range pkg.Syntax {
 			for _, decl := range file.Decls {
 				violations = append(violations, exportedDeclExternalTypeViolations(cfg, pkg, decl)...)
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkProtocolDTOsInPorts(cfg Config, pkgs []LoadedPackage) []Violation {
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if info.Layer != portsLayerName {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			for _, decl := range file.Decls {
+				violations = append(violations, protocolDTOTypeViolations(pkg, decl)...)
 			}
 		}
 	}
@@ -137,6 +160,66 @@ func externalTypeViolationsForObject(cfg Config, pkg LoadedPackage, ident *ast.I
 		To:      externalTypeRefsString(refs),
 		Message: fmt.Sprintf("exported ports API %q references external dependency type(s)", name),
 	}}
+}
+
+func protocolDTOTypeViolations(pkg LoadedPackage, decl ast.Decl) []Violation {
+	genDecl, ok := decl.(*ast.GenDecl)
+	if !ok {
+		return nil
+	}
+	var violations []Violation
+	for _, spec := range genDecl.Specs {
+		typeSpec, ok := spec.(*ast.TypeSpec)
+		if !ok || typeSpec.Name == nil || !ast.IsExported(typeSpec.Name.Name) {
+			continue
+		}
+		structType, ok := typeSpec.Type.(*ast.StructType)
+		if !ok {
+			continue
+		}
+		tags := protocolTags(structType)
+		if len(tags) == 0 {
+			continue
+		}
+		violations = append(violations, Violation{
+			Rule:    ruleProtocolDTOInPorts,
+			From:    positionString(pkg, typeSpec.Name.Pos()),
+			To:      strings.Join(tags, ", "),
+			Message: fmt.Sprintf("exported ports struct %q has protocol field tags", typeSpec.Name.Name),
+		})
+	}
+	return violations
+}
+
+func protocolTags(structType *ast.StructType) []string {
+	if structType.Fields == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for _, field := range structType.Fields.List {
+		if field.Tag == nil {
+			continue
+		}
+		tagText, err := strconv.Unquote(field.Tag.Value)
+		if err != nil {
+			continue
+		}
+		structTag := reflect.StructTag(tagText)
+		for _, key := range protocolTagKeys {
+			if value, ok := structTag.Lookup(key); ok && value != "-" {
+				seen[key] = struct{}{}
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	tags := make([]string, 0, len(seen))
+	for tag := range seen {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	return tags
 }
 
 func externalTypeRefs(t types.Type, current *types.Package, root string) []externalTypeRef {
