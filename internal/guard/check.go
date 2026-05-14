@@ -46,6 +46,11 @@ func Check(cfg Config, edges []ImportEdge) []Violation {
 		}
 	}
 
+	sortViolations(violations)
+	return violations
+}
+
+func sortViolations(violations []Violation) {
 	sort.Slice(violations, func(i, j int) bool {
 		if violations[i].Rule != violations[j].Rule {
 			return violations[i].Rule < violations[j].Rule
@@ -55,7 +60,6 @@ func Check(cfg Config, edges []ImportEdge) []Violation {
 		}
 		return violations[i].To < violations[j].To
 	})
-	return violations
 }
 
 func classifyEdgeFrom(cfg Config, edge ImportEdge) packageInfo {

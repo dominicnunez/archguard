@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"go/types"
 	"path/filepath"
 	"strings"
 
@@ -32,6 +33,8 @@ type LoadedPackage struct {
 	Imports    map[string]*packages.Package
 	Syntax     []*ast.File
 	Fset       *token.FileSet
+	Types      *types.Package
+	TypesInfo  *types.Info
 }
 
 func LoadImportGraph(dir string, patterns []string) ([]ImportEdge, error) {
@@ -44,6 +47,10 @@ func LoadImportGraphWithOptions(dir string, patterns []string, opts LoadOptions)
 		return nil, err
 	}
 
+	return ImportEdges(pkgs), nil
+}
+
+func ImportEdges(pkgs []LoadedPackage) []ImportEdge {
 	var edges []ImportEdge
 	seen := make(map[importEdgeKey]struct{})
 	for _, pkg := range pkgs {
@@ -57,7 +64,7 @@ func LoadImportGraphWithOptions(dir string, patterns []string, opts LoadOptions)
 			edges = append(edges, edge)
 		}
 	}
-	return edges, nil
+	return edges
 }
 
 type importEdgeKey struct {
@@ -110,6 +117,8 @@ func LoadPackages(dir string, patterns []string, opts LoadOptions) ([]LoadedPack
 			Imports:    pkg.Imports,
 			Syntax:     pkg.Syntax,
 			Fset:       pkg.Fset,
+			Types:      pkg.Types,
+			TypesInfo:  pkg.TypesInfo,
 		})
 	}
 	return loaded, nil

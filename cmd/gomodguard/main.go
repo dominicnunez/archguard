@@ -92,11 +92,17 @@ func runCheck(args []string) error {
 		patterns = cfg.PackagePatterns()
 	}
 
-	edges, err := guard.LoadImportGraphWithOptions(repoDir, patterns, guard.LoadOptions{IncludeTests: cfg.Analysis.IncludeTests})
+	pkgs, err := guard.LoadPackages(repoDir, patterns, guard.LoadOptions{
+		IncludeTests: cfg.Analysis.IncludeTests,
+		NeedSyntax:   guard.AnalysisRequiresSyntax(cfg),
+	})
 	if err != nil {
 		return err
 	}
-	violations := guard.Check(cfg, edges)
+	violations, err := guard.CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		return err
+	}
 	if len(violations) == 0 {
 		fmt.Fprintln(os.Stdout, "gomodguard: no boundary violations")
 		return nil

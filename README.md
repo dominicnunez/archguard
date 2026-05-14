@@ -45,6 +45,8 @@ layers:
     path: domain
   - name: app
     path: app
+  - name: ports
+    path: ports
   - name: adapters
     path: adapters
 
@@ -87,5 +89,6 @@ analysis:
 - `allow` entries are explicit exceptions for known migration seams.
 - `analysis.include_tests` includes Go test variants in import checks and profile checks.
 - `analysis.profiles` enables reusable built-in checks such as `modular-monolith`.
+- `modular-monolith` reports exported `ports` APIs that reference non-stdlib external dependency types.
 
 Path patterns support `*`, `?`, and `**`.
