@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -71,6 +72,35 @@ func TestCheckProfilesFindsProtocolDTOsInPorts(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsBroadPortsSurfaces(t *testing.T) {
+	dir := writeBroadPortsFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	fileViolation, ok := violationByRule(violations, ruleBroadPortsFile)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleBroadPortsFile, violations)
+	}
+	if fileViolation.To != fmt.Sprint(maxPortsInterfacesPerFile+1) {
+		t.Fatalf("broad file To = %q; want %d", fileViolation.To, maxPortsInterfacesPerFile+1)
+	}
+	interfaceViolation, ok := violationByRule(violations, ruleBroadPortsInterface)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleBroadPortsInterface, violations)
+	}
+	if interfaceViolation.To != fmt.Sprint(maxPortsInterfaceMethods+1) {
+		t.Fatalf("broad interface To = %q; want %d", interfaceViolation.To, maxPortsInterfaceMethods+1)
+	}
+}
+
 func writeExternalTypeFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -111,6 +141,28 @@ func writeProtocolDTOFixture(t *testing.T) string {
 	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
 	writeTestFile(t, dir, "internal/creator/ports/ports.go", "package ports\n\ntype HTTPResponse struct {\n\tID      string `json:\"id\"`\n\tIgnored string `json:\"-\"`\n}\n")
 	writeTestFile(t, dir, "internal/creator/app/app.go", "package app\n\ntype AppResponse struct {\n\tID string `json:\"id\"`\n}\n")
+	return dir
+}
+
+func writeBroadPortsFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+
+	var ports strings.Builder
+	ports.WriteString("package ports\n\n")
+	for i := 0; i < maxPortsInterfacesPerFile+1; i++ {
+		fmt.Fprintf(&ports, "type Port%d interface {\n\tMethod%d()\n}\n\n", i, i)
+	}
+	writeTestFile(t, dir, "internal/creator/ports/ports.go", ports.String())
+
+	var wide strings.Builder
+	wide.WriteString("package ports\n\ntype Wide interface {\n")
+	for i := 0; i < maxPortsInterfaceMethods+1; i++ {
+		fmt.Fprintf(&wide, "\tMethod%d()\n", i)
+	}
+	wide.WriteString("}\n")
+	writeTestFile(t, dir, "internal/creator/ports/wide.go", wide.String())
 	return dir
 }
 

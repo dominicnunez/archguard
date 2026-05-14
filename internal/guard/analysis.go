@@ -16,7 +16,11 @@ const (
 	profileModularMonolith      = "modular-monolith"
 	ruleExportedAPIExternalType = "exported-api-external-type"
 	ruleProtocolDTOInPorts      = "protocol-dto-in-ports"
+	ruleBroadPortsFile          = "broad-ports-file"
+	ruleBroadPortsInterface     = "broad-ports-interface"
 	portsLayerName              = "ports"
+	maxPortsInterfacesPerFile   = 8
+	maxPortsInterfaceMethods    = 8
 )
 
 var protocolTagKeys = []string{"json", "xml", "yaml", "form", "protobuf"}
@@ -48,6 +52,7 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 		case profileModularMonolith:
 			violations = append(violations, checkExportedAPIExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkProtocolDTOsInPorts(cfg, pkgs)...)
+			violations = append(violations, checkBroadPortsSurfaces(cfg, pkgs)...)
 		default:
 			return nil, fmt.Errorf("unknown analysis profile %q", profile)
 		}
@@ -102,6 +107,21 @@ func checkProtocolDTOsInPorts(cfg Config, pkgs []LoadedPackage) []Violation {
 			for _, decl := range file.Decls {
 				violations = append(violations, protocolDTOTypeViolations(pkg, decl)...)
 			}
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkBroadPortsSurfaces(cfg Config, pkgs []LoadedPackage) []Violation {
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if info.Layer != portsLayerName {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			violations = append(violations, broadPortsFileViolations(pkg, file)...)
 		}
 	}
 	sortViolations(violations)
@@ -189,6 +209,57 @@ func protocolDTOTypeViolations(pkg LoadedPackage, decl ast.Decl) []Violation {
 		})
 	}
 	return violations
+}
+
+func broadPortsFileViolations(pkg LoadedPackage, file *ast.File) []Violation {
+	var violations []Violation
+	var exportedInterfaces []ast.Ident
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || typeSpec.Name == nil || !ast.IsExported(typeSpec.Name.Name) {
+				continue
+			}
+			interfaceType, ok := typeSpec.Type.(*ast.InterfaceType)
+			if !ok {
+				continue
+			}
+			exportedInterfaces = append(exportedInterfaces, *typeSpec.Name)
+			methodCount := interfaceMethodCount(interfaceType)
+			if methodCount > maxPortsInterfaceMethods {
+				violations = append(violations, Violation{
+					Rule:    ruleBroadPortsInterface,
+					From:    positionString(pkg, typeSpec.Name.Pos()),
+					To:      strconv.Itoa(methodCount),
+					Message: fmt.Sprintf("exported ports interface %q has more than %d explicit methods", typeSpec.Name.Name, maxPortsInterfaceMethods),
+				})
+			}
+		}
+	}
+	if len(exportedInterfaces) > maxPortsInterfacesPerFile {
+		violations = append(violations, Violation{
+			Rule:    ruleBroadPortsFile,
+			From:    positionString(pkg, exportedInterfaces[0].Pos()),
+			To:      strconv.Itoa(len(exportedInterfaces)),
+			Message: fmt.Sprintf("ports file declares more than %d exported interfaces", maxPortsInterfacesPerFile),
+		})
+	}
+	return violations
+}
+
+func interfaceMethodCount(interfaceType *ast.InterfaceType) int {
+	if interfaceType.Methods == nil {
+		return 0
+	}
+	count := 0
+	for _, field := range interfaceType.Methods.List {
+		count += len(field.Names)
+	}
+	return count
 }
 
 func protocolTags(structType *ast.StructType) []string {
