@@ -2,7 +2,7 @@
 
 `gomodguard` checks Go modular-monolith import boundaries from a project-local config file.
 
-It is intentionally configuration-driven: the tool knows how to load a Go import graph and evaluate rules, while each repository defines its own modules, layers, exceptions, and migration allowlist.
+It is intentionally configuration-driven: the tool knows how to load a Go import graph and evaluate a default-deny import policy, while each repository defines its own modules, layers, and allowed boundary crossings.
 
 ## Usage
 
@@ -50,25 +50,27 @@ layers:
   - name: adapters
     path: adapters
 
-rules:
-  - name: domain-no-foreign-modules
+policy:
+  default: deny
+  allow:
+  - name: same-module
     from:
-      layer: domain
-    deny:
-      modules: ["*"]
-      except_same_module: true
+      module: "*"
+    to:
+      same_module: true
 
-  - name: app-no-foreign-adapters
+  - name: app-to-local-domain-and-ports
     from:
       layer: app
-    deny:
-      layers: [adapters]
-      except_same_module: true
+    to:
+      same_module: true
+      layers: [domain, ports]
 
-allow:
-  - from: internal/bootstrap
-    to: internal/*/adapters/postgres
-    reason: composition root wires concrete repositories
+  - name: bootstrap-wiring
+    from:
+      path: internal/bootstrap/**
+    to:
+      internal: true
 ```
 
 Optional analysis profiles enable generic AST/SQL checks without adding
@@ -85,8 +87,12 @@ analysis:
 
 - `modules` identify bounded contexts by repository-relative path.
 - `layers` identify conventional subdirectories within modules.
-- `rules` select importers with `from`, then deny imports by target module, layer, or path.
-- `allow` entries are explicit exceptions for known migration seams.
+- `policy.default` must be `deny`; internal imports are rejected unless an allow rule matches.
+- `policy.allow` entries select importers with `from`, then allow target imports with `to`.
+- `to.same_module` allows imports only when source and target are in the same configured module.
+- `to.internal` allows imports to any internal package.
+- `to.module`, `to.modules`, `to.layer`, `to.layers`, `to.path`, and `to.paths` narrow allowed targets.
+- `ignore` entries exclude known generated or out-of-scope paths from import checks.
 - `analysis.include_tests` includes Go test variants in import checks and profile checks.
 - `analysis.profiles` enables reusable built-in checks such as `modular-monolith`.
 - `modular-monolith` reports exported `ports` APIs that reference non-stdlib external dependency types.
