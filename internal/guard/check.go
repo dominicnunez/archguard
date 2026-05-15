@@ -2,12 +2,13 @@ package guard
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 )
 
 var ErrViolationsFound = errors.New("boundary violations found")
+
+const rulePolicyDeny = "policy-deny"
 
 type Violation struct {
 	Rule    string
@@ -29,21 +30,15 @@ func Check(cfg Config, edges []ImportEdge) []Violation {
 	for _, edge := range edges {
 		from := classifyEdgeFrom(cfg, edge)
 		to := classifyPackage(cfg, edge.To)
-		if !from.Internal || !to.Internal || ignored(cfg, from) || ignored(cfg, to) || allowed(cfg, from, to) {
+		if !from.Internal || !to.Internal || ignored(cfg, from) || ignored(cfg, to) || policyAllows(cfg, from, to) {
 			continue
 		}
-
-		for _, rule := range cfg.Rules {
-			if !selectorMatches(rule.From, from) || !denies(rule.Deny, from, to) {
-				continue
-			}
-			violations = append(violations, Violation{
-				Rule:    rule.Name,
-				From:    from.RelPath,
-				To:      to.RelPath,
-				Message: denyMessage(rule.Deny),
-			})
-		}
+		violations = append(violations, Violation{
+			Rule:    rulePolicyDeny,
+			From:    from.RelPath,
+			To:      to.RelPath,
+			Message: "internal import is not allowed by policy",
+		})
 	}
 
 	sortViolations(violations)
@@ -150,25 +145,56 @@ func selectorMatches(selector Selector, info packageInfo) bool {
 	return selector.Module != "" || selector.Layer != "" || selector.Path != ""
 }
 
-func denies(deny DenyConfig, from, to packageInfo) bool {
-	if deny.ExceptSameModule && from.Module != "" && from.Module == to.Module {
-		return false
-	}
-	if len(deny.Modules) > 0 && to.Module != "" && matchesAny(deny.Modules, to.Module) {
-		return true
-	}
-	if len(deny.Layers) > 0 && to.Layer != "" && matchesAny(deny.Layers, to.Layer) {
-		return true
-	}
-	if len(deny.Paths) > 0 && matchesAny(deny.Paths, to.RelPath) {
-		return true
+func policyAllows(cfg Config, from, to packageInfo) bool {
+	for _, allow := range cfg.Policy.Allow {
+		if selectorMatches(allow.From, from) && targetMatches(allow.To, from, to) {
+			return true
+		}
 	}
 	return false
 }
 
-func allowed(cfg Config, from, to packageInfo) bool {
-	for _, allow := range cfg.Allow {
-		if pathSelectorMatches(allow.From, from) && pathSelectorMatches(allow.To, to) {
+func targetMatches(target TargetSelector, from, to packageInfo) bool {
+	if target.Internal && !to.Internal {
+		return false
+	}
+	if target.SameModule && (from.Module == "" || from.Module != to.Module) {
+		return false
+	}
+	if !matchesTargetValue(target.Module, target.Modules, to.Module) {
+		return false
+	}
+	if !matchesTargetValue(target.Layer, target.Layers, to.Layer) {
+		return false
+	}
+	if !matchesTargetPath(target, to) {
+		return false
+	}
+	return targetSelectorConfigured(target)
+}
+
+func matchesTargetValue(single string, many []string, value string) bool {
+	if single == "" && len(many) == 0 {
+		return true
+	}
+	if value == "" {
+		return false
+	}
+	if single != "" && wildcardMatch(single, value) {
+		return true
+	}
+	return len(many) > 0 && matchesAny(many, value)
+}
+
+func matchesTargetPath(target TargetSelector, info packageInfo) bool {
+	if target.Path == "" && len(target.Paths) == 0 {
+		return true
+	}
+	if target.Path != "" && pathSelectorMatches(target.Path, info) {
+		return true
+	}
+	for _, path := range target.Paths {
+		if pathSelectorMatches(path, info) {
 			return true
 		}
 	}
@@ -186,21 +212,4 @@ func ignored(cfg Config, info packageInfo) bool {
 
 func pathSelectorMatches(pattern string, info packageInfo) bool {
 	return wildcardMatch(pattern, info.RelPath) || wildcardMatch(pattern, info.ImportPath)
-}
-
-func denyMessage(deny DenyConfig) string {
-	var parts []string
-	if len(deny.Modules) > 0 {
-		parts = append(parts, fmt.Sprintf("target modules %v are denied", deny.Modules))
-	}
-	if len(deny.Layers) > 0 {
-		parts = append(parts, fmt.Sprintf("target layers %v are denied", deny.Layers))
-	}
-	if len(deny.Paths) > 0 {
-		parts = append(parts, fmt.Sprintf("target paths %v are denied", deny.Paths))
-	}
-	if deny.ExceptSameModule {
-		parts = append(parts, "except within the same module")
-	}
-	return strings.Join(parts, "; ")
 }

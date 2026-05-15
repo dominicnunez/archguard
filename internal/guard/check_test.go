@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestCheckFindsForeignAdapterImport(t *testing.T) {
+func TestCheckDeniesUnmatchedInternalImport(t *testing.T) {
 	cfg := testConfig()
 	edges := []ImportEdge{
 		{From: "example.com/app/internal/creator/app", To: "example.com/app/internal/market/adapters/postgres"},
@@ -17,12 +17,12 @@ func TestCheckFindsForeignAdapterImport(t *testing.T) {
 	if len(violations) != 1 {
 		t.Fatalf("Check() violations = %d; want 1", len(violations))
 	}
-	if violations[0].Rule != "app-no-foreign-adapters" {
-		t.Fatalf("Rule = %q; want app-no-foreign-adapters", violations[0].Rule)
+	if violations[0].Rule != rulePolicyDeny {
+		t.Fatalf("Rule = %q; want %s", violations[0].Rule, rulePolicyDeny)
 	}
 }
 
-func TestCheckAllowsSameModuleAdapterImport(t *testing.T) {
+func TestCheckAllowsSameModuleImport(t *testing.T) {
 	cfg := testConfig()
 	edges := []ImportEdge{
 		{From: "example.com/app/internal/creator/app", To: "example.com/app/internal/creator/adapters/token"},
@@ -35,16 +35,9 @@ func TestCheckAllowsSameModuleAdapterImport(t *testing.T) {
 	}
 }
 
-func TestCheckAllowsExplicitException(t *testing.T) {
+func TestCheckAllowsPathToInternal(t *testing.T) {
 	cfg := testConfig()
-	cfg.Allow = []AllowConfig{
-		{From: "internal/bootstrap", To: "internal/*/adapters/postgres", Reason: "composition root"},
-	}
-	cfg.Rules = append(cfg.Rules, RuleConfig{
-		Name: "bootstrap-no-adapters",
-		From: Selector{Path: "internal/bootstrap"},
-		Deny: DenyConfig{Layers: []string{"adapters"}},
-	})
+	cfg.Policy.Allow = append(cfg.Policy.Allow, PolicyAllowConfig{Name: "bootstrap", From: Selector{Path: "internal/bootstrap"}, To: TargetSelector{Internal: true}})
 	edges := []ImportEdge{
 		{From: "example.com/app/internal/bootstrap", To: "example.com/app/internal/creator/adapters/postgres"},
 	}
@@ -53,6 +46,26 @@ func TestCheckAllowsExplicitException(t *testing.T) {
 
 	if len(violations) != 0 {
 		t.Fatalf("Check() violations = %d; want 0", len(violations))
+	}
+}
+
+func TestCheckAllowsTargetLayerWithinSameModule(t *testing.T) {
+	cfg := testConfig()
+	cfg.Policy.Allow = []PolicyAllowConfig{
+		{Name: "app-to-domain", From: Selector{Layer: "app"}, To: TargetSelector{SameModule: true, Layers: []string{"domain"}}},
+	}
+	edges := []ImportEdge{
+		{From: "example.com/app/internal/creator/app", To: "example.com/app/internal/creator/domain"},
+		{From: "example.com/app/internal/creator/app", To: "example.com/app/internal/creator/adapters/token"},
+	}
+
+	violations := Check(cfg, edges)
+
+	if len(violations) != 1 {
+		t.Fatalf("Check() violations = %d; want 1", len(violations))
+	}
+	if violations[0].To != "internal/creator/adapters/token" {
+		t.Fatalf("To = %q; want internal/creator/adapters/token", violations[0].To)
 	}
 }
 
@@ -85,8 +98,23 @@ func TestCheckUsesFromRelPathForTestPackages(t *testing.T) {
 	if len(violations) != 1 {
 		t.Fatalf("Check() violations = %d; want 1", len(violations))
 	}
+	if violations[0].Rule != rulePolicyDeny {
+		t.Fatalf("Rule = %q; want %s", violations[0].Rule, rulePolicyDeny)
+	}
 	if violations[0].From != "internal/creator/app" {
 		t.Fatalf("From = %q; want internal/creator/app", violations[0].From)
+	}
+}
+
+func TestCheckIgnoresConfiguredPaths(t *testing.T) {
+	cfg := testConfig()
+	cfg.Ignore = []IgnoreConfig{{Path: "internal/creator/app", Reason: "generated"}}
+	edges := []ImportEdge{{From: "example.com/app/internal/creator/app", To: "example.com/app/internal/market/adapters/postgres"}}
+
+	violations := Check(cfg, edges)
+
+	if len(violations) != 0 {
+		t.Fatalf("Check() violations = %d; want 0", len(violations))
 	}
 }
 
@@ -168,12 +196,12 @@ func testConfig() Config {
 			{Name: "app", Path: "app"},
 			{Name: "adapters", Path: "adapters"},
 		},
-		Rules: []RuleConfig{
+		Policy: PolicyConfig{Default: "deny", Allow: []PolicyAllowConfig{
 			{
-				Name: "app-no-foreign-adapters",
-				From: Selector{Layer: "app"},
-				Deny: DenyConfig{Layers: []string{"adapters"}, ExceptSameModule: true},
+				Name: "same-module",
+				From: Selector{Module: "*"},
+				To:   TargetSelector{SameModule: true},
 			},
-		},
+		}},
 	}
 }

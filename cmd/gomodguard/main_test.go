@@ -39,13 +39,14 @@ layers:
     path: app
   - name: adapters
     path: adapters
-rules:
-  - name: app-no-foreign-adapters
+policy:
+  default: deny
+  allow:
+  - name: same-module
     from:
-      layer: app
-    deny:
-      layers: [adapters]
-      except_same_module: true
+      module: "*"
+    to:
+      same_module: true
 `)
 	writeCLIFile(t, dir, "internal/creator/app/app.go", "package app\n\nfunc Name() string { return \"creator\" }\n")
 	writeCLIFile(t, dir, "internal/creator/app/app_test.go", `package app_test

@@ -16,8 +16,7 @@ type Config struct {
 	Packages PackagesConfig `json:"packages" yaml:"packages"`
 	Modules  []ModuleConfig `json:"modules" yaml:"modules"`
 	Layers   []LayerConfig  `json:"layers" yaml:"layers"`
-	Rules    []RuleConfig   `json:"rules" yaml:"rules"`
-	Allow    []AllowConfig  `json:"allow" yaml:"allow"`
+	Policy   PolicyConfig   `json:"policy" yaml:"policy"`
 	Ignore   []IgnoreConfig `json:"ignore" yaml:"ignore"`
 	Analysis AnalysisConfig `json:"analysis" yaml:"analysis"`
 }
@@ -37,29 +36,32 @@ type LayerConfig struct {
 	Path string `json:"path" yaml:"path"`
 }
 
-type RuleConfig struct {
-	Name string     `json:"name" yaml:"name"`
-	From Selector   `json:"from" yaml:"from"`
-	Deny DenyConfig `json:"deny" yaml:"deny"`
-}
-
 type Selector struct {
 	Module string `json:"module" yaml:"module"`
 	Layer  string `json:"layer" yaml:"layer"`
 	Path   string `json:"path" yaml:"path"`
 }
 
-type DenyConfig struct {
-	Modules          []string `json:"modules" yaml:"modules"`
-	Layers           []string `json:"layers" yaml:"layers"`
-	Paths            []string `json:"paths" yaml:"paths"`
-	ExceptSameModule bool     `json:"except_same_module" yaml:"except_same_module"`
+type PolicyConfig struct {
+	Default string              `json:"default" yaml:"default"`
+	Allow   []PolicyAllowConfig `json:"allow" yaml:"allow"`
 }
 
-type AllowConfig struct {
-	From   string `json:"from" yaml:"from"`
-	To     string `json:"to" yaml:"to"`
-	Reason string `json:"reason" yaml:"reason"`
+type PolicyAllowConfig struct {
+	Name string         `json:"name" yaml:"name"`
+	From Selector       `json:"from" yaml:"from"`
+	To   TargetSelector `json:"to" yaml:"to"`
+}
+
+type TargetSelector struct {
+	Internal   bool     `json:"internal" yaml:"internal"`
+	SameModule bool     `json:"same_module" yaml:"same_module"`
+	Module     string   `json:"module" yaml:"module"`
+	Modules    []string `json:"modules" yaml:"modules"`
+	Layer      string   `json:"layer" yaml:"layer"`
+	Layers     []string `json:"layers" yaml:"layers"`
+	Path       string   `json:"path" yaml:"path"`
+	Paths      []string `json:"paths" yaml:"paths"`
 }
 
 type IgnoreConfig struct {
@@ -92,13 +94,45 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("unsupported config extension %q", filepath.Ext(path))
 	}
 
-	if cfg.Packages.Root == "" {
-		return Config{}, fmt.Errorf("config packages.root is required")
-	}
 	if len(cfg.Packages.Patterns) == 0 {
 		cfg.Packages.Patterns = []string{defaultPackagePattern}
 	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func (c Config) Validate() error {
+	if c.Packages.Root == "" {
+		return fmt.Errorf("config packages.root is required")
+	}
+	if c.Policy.Default != "deny" {
+		return fmt.Errorf("config policy.default must be \"deny\"")
+	}
+	if len(c.Policy.Allow) == 0 {
+		return fmt.Errorf("config policy.allow must contain at least one rule")
+	}
+	for i, allow := range c.Policy.Allow {
+		if allow.Name == "" {
+			return fmt.Errorf("config policy.allow[%d].name is required", i)
+		}
+		if !selectorConfigured(allow.From) {
+			return fmt.Errorf("config policy.allow[%d].from is required", i)
+		}
+		if !targetSelectorConfigured(allow.To) {
+			return fmt.Errorf("config policy.allow[%d].to is required", i)
+		}
+	}
+	return nil
+}
+
+func selectorConfigured(selector Selector) bool {
+	return selector.Module != "" || selector.Layer != "" || selector.Path != ""
+}
+
+func targetSelectorConfigured(selector TargetSelector) bool {
+	return selector.Internal || selector.SameModule || selector.Module != "" || len(selector.Modules) > 0 || selector.Layer != "" || len(selector.Layers) > 0 || selector.Path != "" || len(selector.Paths) > 0
 }
 
 func FindConfig(dir string) (string, error) {
