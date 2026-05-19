@@ -28,6 +28,7 @@ const (
 	ruleCompositionDomainConvert = "composition-root-domain-conversion"
 	ruleSQLCrossModuleTable      = "sql-cross-module-table"
 	ruleExternalImportNotAllowed = "external-import-not-allowed"
+	rulePortsImportAdapter       = "ports-imports-adapter"
 	portsLayerName               = "ports"
 	adaptersLayerName            = "adapters"
 	maxPortsInterfacesPerFile    = 8
@@ -67,6 +68,7 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 		switch profile {
 		case profileModularMonolith:
 			violations = append(violations, checkExternalImportAllowlist(cfg, pkgs)...)
+			violations = append(violations, checkPortsAdapterImports(cfg, pkgs)...)
 			violations = append(violations, checkExportedAPIExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkAppInterfaceExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkProtocolDTOsInPorts(cfg, pkgs)...)
@@ -130,6 +132,30 @@ func externalImportMatches(allow ExternalImportAllowConfig, importPath string) b
 		return true
 	}
 	return len(allow.Packages) > 0 && matchesAny(allow.Packages, importPath)
+}
+
+func checkPortsAdapterImports(cfg Config, pkgs []LoadedPackage) []Violation {
+	var violations []Violation
+	for _, pkg := range pkgs {
+		from := classifyLoadedPackage(cfg, pkg)
+		if from.Layer != portsLayerName {
+			continue
+		}
+		for importPath := range pkg.Imports {
+			to := classifyPackage(cfg, importPath)
+			if !to.Internal || to.Layer != adaptersLayerName {
+				continue
+			}
+			violations = append(violations, Violation{
+				Rule:    rulePortsImportAdapter,
+				From:    from.RelPath,
+				To:      to.RelPath,
+				Message: "ports packages must not import adapter implementations",
+			})
+		}
+	}
+	sortViolations(violations)
+	return violations
 }
 
 func checkAppInterfaceExternalTypes(cfg Config, pkgs []LoadedPackage) []Violation {

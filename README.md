@@ -127,6 +127,7 @@ analysis:
 - `analysis.table_owners` maps table names or wildcard patterns to owning modules for SQL ownership checks when table names do not follow module-name conventions.
 - `analysis.external_imports` defines an allowlist for external imports from selected packages; matching packages reject external imports not listed in `allow`, and omitted `allow` means no external imports are allowed.
 - `modular-monolith` reports exported `ports` APIs that reference non-stdlib external dependency types.
+- `modular-monolith` reports `ports` packages that import adapter implementations.
 - `modular-monolith` reports exported `app` interfaces that expose non-stdlib external dependency types.
 - `modular-monolith` reports exported `ports` structs with protocol field tags such as `json`.
 - `modular-monolith` reports exported `ports` structs that expose primitive numeric time fields such as integer timestamps.

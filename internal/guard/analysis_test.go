@@ -316,6 +316,28 @@ func TestCheckProfilesFindsExternalImportsWithEmptyAllowlist(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsPortsImportingAdapters(t *testing.T) {
+	dir := writePortsAdapterImportFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, rulePortsImportAdapter)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", rulePortsImportAdapter, violations)
+	}
+	if violation.From != "internal/creator/ports" || violation.To != "internal/creator/adapters/postgres" {
+		t.Fatalf("violation = %+v; want ports importing postgres adapter", violation)
+	}
+}
+
 func writeExternalTypeFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -378,6 +400,20 @@ func Run() {
 	infra.Use()
 	logging.Use()
 }
+`)
+	return dir
+}
+
+func writePortsAdapterImportFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/creator/adapters/postgres/repo.go", "package postgres\n\ntype Repository struct{}\n")
+	writeTestFile(t, dir, "internal/creator/ports/ports.go", `package ports
+
+import creatorpostgres "example.com/app/internal/creator/adapters/postgres"
+
+var _ = (*creatorpostgres.Repository)(nil)
 `)
 	return dir
 }
