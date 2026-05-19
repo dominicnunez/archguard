@@ -23,9 +23,11 @@ By default, `archguard check` looks for one of:
 - `.archguard.yml`
 - `.archguard.jsonc`
 
+Legacy `gomodguard.*` config names are not discovered; rename project configs to
+one of the `archguard.*` names above.
+
 ## Config
 
-See `examples/thor.archguard.yaml` for a real modular-monolith config.
 JSONC config files support comments and trailing commas.
 
 ```yaml
@@ -73,6 +75,14 @@ policy:
       path: internal/bootstrap/**
     to:
       internal: true
+
+  - name: app-test-support
+    from:
+      layer: app
+      tests: true
+    to:
+      paths:
+        - internal/testhelpers
 ```
 
 Optional analysis profiles enable generic AST/SQL checks without adding
@@ -91,7 +101,7 @@ analysis:
 - `layers` identify conventional subdirectories within modules.
 - `policy.default` must be `deny`; internal imports are rejected unless an allow rule matches.
 - `policy.allow` entries select importers with `from`, then allow target imports with `to`.
-- `from.tests: true` restricts an allow rule to test import edges; `from.tests: false` restricts it to production import edges.
+- `from.tests: true` restricts an allow rule to test import edges; `from.tests: false` restricts it to production import edges; omitting `tests` preserves the default behavior and matches both.
 - `to.same_module` allows imports only when source and target are in the same configured module.
 - `to.internal` allows imports to any internal package.
 - `to.module`, `to.modules`, `to.layer`, `to.layers`, `to.path`, and `to.paths` narrow allowed targets.
@@ -100,7 +110,7 @@ analysis:
 - `analysis.profiles` enables reusable built-in checks such as `modular-monolith`.
 - `modular-monolith` reports exported `ports` APIs that reference non-stdlib external dependency types.
 - `modular-monolith` reports exported `ports` structs with protocol field tags such as `json`.
-- `modular-monolith` reports broad `ports` files and interfaces with large method surfaces.
+- `modular-monolith` reports broad `ports` files and non-persistence interfaces with large method surfaces. Persistence-shaped ports ending in `Repository` or `DataSource` are excluded from this broad-surface heuristic.
 - `modular-monolith` reports thin adapters that embed foreign ports or only forward calls.
 - `modular-monolith` reports composition-root mutation, Set-style wiring, domain conversions, and cross-module SQL table references.
 
