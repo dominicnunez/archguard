@@ -101,6 +101,26 @@ func TestCheckProfilesFindsBroadPortsSurfaces(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesIgnoresBroadPersistencePorts(t *testing.T) {
+	dir := writeBroadPersistencePortsFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+	if _, ok := violationByRule(violations, ruleBroadPortsFile); ok {
+		t.Fatalf("CheckLoadedPackages() reported broad persistence ports file: %v", violations)
+	}
+	if _, ok := violationByRule(violations, ruleBroadPortsInterface); ok {
+		t.Fatalf("CheckLoadedPackages() reported broad persistence port interface: %v", violations)
+	}
+}
+
 func TestCheckProfilesFindsThinAdapters(t *testing.T) {
 	dir := writeThinAdapterFixture(t)
 	cfg := externalTypeConfig()
@@ -234,6 +254,24 @@ func writeBroadPortsFixture(t *testing.T) string {
 	}
 	wide.WriteString("}\n")
 	writeTestFile(t, dir, "internal/creator/ports/wide.go", wide.String())
+	return dir
+}
+
+func writeBroadPersistencePortsFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+
+	var ports strings.Builder
+	ports.WriteString("package ports\n\n")
+	for i := 0; i < maxPortsInterfacesPerFile+1; i++ {
+		fmt.Fprintf(&ports, "type Store%dRepository interface {\n", i)
+		for j := 0; j < maxPortsInterfaceMethods+1; j++ {
+			fmt.Fprintf(&ports, "\tMethod%d()\n", j)
+		}
+		ports.WriteString("}\n\n")
+	}
+	writeTestFile(t, dir, "internal/creator/ports/repositories.go", ports.String())
 	return dir
 }
 

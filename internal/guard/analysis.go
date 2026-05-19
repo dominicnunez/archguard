@@ -434,6 +434,9 @@ func broadPortsFileViolations(pkg LoadedPackage, file *ast.File) []Violation {
 			if !ok {
 				continue
 			}
+			if isPersistencePortInterface(typeSpec.Name.Name) {
+				continue
+			}
 			exportedInterfaces = append(exportedInterfaces, *typeSpec.Name)
 			methodCount := interfaceMethodCount(interfaceType)
 			if methodCount > maxPortsInterfaceMethods {
@@ -455,6 +458,10 @@ func broadPortsFileViolations(pkg LoadedPackage, file *ast.File) []Violation {
 		})
 	}
 	return violations
+}
+
+func isPersistencePortInterface(name string) bool {
+	return strings.HasSuffix(name, "Repository") || strings.HasSuffix(name, "DataSource")
 }
 
 func adapterEmbeddedForeignPortViolations(cfg Config, pkg LoadedPackage, adapterInfo packageInfo, file *ast.File) []Violation {
