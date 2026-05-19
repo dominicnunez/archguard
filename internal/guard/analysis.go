@@ -46,6 +46,11 @@ type externalTypeRef struct {
 	Name        string
 }
 
+type sqlTableSeenKey struct {
+	file  string
+	table string
+}
+
 func AnalysisRequiresSyntax(cfg Config) bool {
 	return len(cfg.Analysis.Profiles) > 0
 }
@@ -424,50 +429,100 @@ func compositionDomainConversionViolation(cfg Config, pkg LoadedPackage, info pa
 }
 
 func sqlTableOwnershipViolations(cfg Config, pkg LoadedPackage, info packageInfo) []Violation {
-	type seenKey struct {
-		file  string
-		table string
-	}
-	seen := make(map[seenKey]struct{})
+	seen := make(map[sqlTableSeenKey]struct{})
 	var violations []Violation
 	for _, file := range pkg.Syntax {
 		ast.Inspect(file, func(node ast.Node) bool {
-			lit, ok := node.(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				return true
-			}
-			text, err := strconv.Unquote(lit.Value)
-			if err != nil {
-				return true
-			}
-			if !looksLikeSQL(text) {
-				return true
-			}
-			for _, table := range sqlTables(text) {
-				owner := tableOwnerModule(cfg, table)
-				if owner == "" || owner == info.Module {
-					continue
+			switch n := node.(type) {
+			case *ast.BasicLit:
+				if n.Kind != token.STRING {
+					return true
 				}
-				filename := ""
-				if pkg.Fset != nil {
-					filename = filepath.ToSlash(pkg.Fset.Position(lit.Pos()).Filename)
+				text, err := strconv.Unquote(n.Value)
+				if err != nil || !looksLikeSQL(text) {
+					return true
 				}
-				key := seenKey{file: filename, table: table}
-				if _, ok := seen[key]; ok {
-					continue
+				for _, table := range sqlTables(text) {
+					violations = append(violations, sqlTableReferenceViolations(cfg, pkg, info, n, table, seen, "SQL references a table inferred to belong to another module")...)
 				}
-				seen[key] = struct{}{}
-				violations = append(violations, Violation{
-					Rule:    ruleSQLCrossModuleTable,
-					From:    positionString(pkg, lit.Pos()),
-					To:      table + " (" + owner + ")",
-					Message: "SQL references a table inferred to belong to another module",
-				})
+			case *ast.CallExpr:
+				if !callMayUseTableName(n) {
+					return true
+				}
+				for _, arg := range n.Args {
+					lit, ok := unparen(arg).(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						continue
+					}
+					text, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						continue
+					}
+					if table := normalizeSQLTable(text); table != "" {
+						violations = append(violations, configuredTableNameLiteralViolations(cfg, pkg, info, lit, table, seen)...)
+					}
+				}
 			}
 			return true
 		})
 	}
 	return violations
+}
+
+func callMayUseTableName(call *ast.CallExpr) bool {
+	name := ""
+	switch fun := unparen(call.Fun).(type) {
+	case *ast.Ident:
+		name = fun.Name
+	case *ast.SelectorExpr:
+		name = fun.Sel.Name
+	}
+	name = strings.ToLower(name)
+	return strings.Contains(name, "table") || strings.Contains(name, "truncate")
+}
+
+func configuredTableNameLiteralViolations(cfg Config, pkg LoadedPackage, info packageInfo, lit *ast.BasicLit, table string, seen map[sqlTableSeenKey]struct{}) []Violation {
+	owner := configuredTableOwnerModule(cfg, table)
+	if owner == "" || owner == info.Module {
+		return nil
+	}
+	filename := ""
+	if pkg.Fset != nil {
+		filename = filepath.ToSlash(pkg.Fset.Position(lit.Pos()).Filename)
+	}
+	key := sqlTableSeenKey{file: filename, table: table}
+	if _, ok := seen[key]; ok {
+		return nil
+	}
+	seen[key] = struct{}{}
+	return []Violation{{
+		Rule:    ruleSQLCrossModuleTable,
+		From:    positionString(pkg, lit.Pos()),
+		To:      table + " (" + owner + ")",
+		Message: "table-name literal references a configured table owned by another module",
+	}}
+}
+
+func sqlTableReferenceViolations(cfg Config, pkg LoadedPackage, info packageInfo, lit *ast.BasicLit, table string, seen map[sqlTableSeenKey]struct{}, message string) []Violation {
+	owner := tableOwnerModule(cfg, table)
+	if owner == "" || owner == info.Module {
+		return nil
+	}
+	filename := ""
+	if pkg.Fset != nil {
+		filename = filepath.ToSlash(pkg.Fset.Position(lit.Pos()).Filename)
+	}
+	key := sqlTableSeenKey{file: filename, table: table}
+	if _, ok := seen[key]; ok {
+		return nil
+	}
+	seen[key] = struct{}{}
+	return []Violation{{
+		Rule:    ruleSQLCrossModuleTable,
+		From:    positionString(pkg, lit.Pos()),
+		To:      table + " (" + owner + ")",
+		Message: message,
+	}}
 }
 
 func exportedDeclExternalTypeViolations(cfg Config, pkg LoadedPackage, decl ast.Decl) []Violation {
