@@ -53,15 +53,16 @@ analysis:
 	}
 }
 
-func TestLoadConfigJSON(t *testing.T) {
+func TestLoadConfigJSONC(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, ".gomodguard.json")
+	path := filepath.Join(dir, ".gomodguard.jsonc")
 	data := []byte(`{
+  // Required config version.
   "version": 1,
   "packages": {"root": "example.com/app", "patterns": ["./internal/..."]},
   "modules": [{"name": "token", "path": "internal/token"}],
   "policy": {"default": "deny", "allow": [{"name": "same-module", "from": {"module": "*"}, "to": {"same_module": true}}]},
-  "analysis": {"include_tests": true, "profiles": ["modular-monolith"]}
+  "analysis": {"include_tests": true, "profiles": ["modular-monolith"]},
 }`)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -76,6 +77,19 @@ func TestLoadConfigJSON(t *testing.T) {
 	}
 	if !cfg.Analysis.IncludeTests {
 		t.Fatalf("analysis.include_tests = false; want true")
+	}
+}
+
+func TestLoadConfigRejectsJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gomodguard.json")
+	data := []byte(`{"version": 1, "packages": {"root": "example.com/app"}, "policy": {"default": "deny", "allow": [{"name": "same-module", "from": {"module": "*"}, "to": {"same_module": true}}]}}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatalf("LoadConfig() error = nil; want error")
 	}
 }
 

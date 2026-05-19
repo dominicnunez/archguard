@@ -10,6 +10,7 @@ It is intentionally configuration-driven: the tool knows how to load a Go import
 gomodguard check
 gomodguard check --config .gomodguard.yaml
 gomodguard check --dir /path/to/repo --config /path/to/repo/.gomodguard.yaml
+gomodguard check --config .gomodguard.jsonc
 gomodguard check --include-tests --profile modular-monolith
 ```
 
@@ -17,14 +18,15 @@ By default, `gomodguard check` looks for one of:
 
 - `gomodguard.yaml`
 - `gomodguard.yml`
-- `gomodguard.json`
+- `gomodguard.jsonc`
 - `.gomodguard.yaml`
 - `.gomodguard.yml`
-- `.gomodguard.json`
+- `.gomodguard.jsonc`
 
 ## Config
 
 See `examples/thor.gomodguard.yaml` for a real modular-monolith config.
+JSONC config files support comments and trailing commas.
 
 ```yaml
 version: 1

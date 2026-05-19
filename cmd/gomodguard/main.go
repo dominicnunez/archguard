@@ -53,7 +53,7 @@ func run(args []string) error {
 func runCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	configPath := fs.String("config", "", "path to .gomodguard.yaml, .gomodguard.yml, or .gomodguard.json")
+	configPath := fs.String("config", "", "path to .gomodguard.yaml, .gomodguard.yml, or .gomodguard.jsonc")
 	dir := fs.String("dir", ".", "repository directory to analyze")
 	includeTests := fs.Bool("include-tests", false, "include Go test variants in import and analysis checks")
 	var cliProfiles stringListFlag

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tailscale/hujson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -82,9 +83,13 @@ func LoadConfig(path string) (Config, error) {
 
 	var cfg Config
 	switch filepath.Ext(path) {
-	case ".json":
+	case ".jsonc":
+		data, err = hujson.Standardize(data)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse jsonc config %s: %w", path, err)
+		}
 		if err := json.Unmarshal(data, &cfg); err != nil {
-			return Config{}, fmt.Errorf("parse json config %s: %w", path, err)
+			return Config{}, fmt.Errorf("parse jsonc config %s: %w", path, err)
 		}
 	case ".yaml", ".yml":
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -139,10 +144,10 @@ func FindConfig(dir string) (string, error) {
 	for _, name := range []string{
 		"gomodguard.yaml",
 		"gomodguard.yml",
-		"gomodguard.json",
+		"gomodguard.jsonc",
 		".gomodguard.yaml",
 		".gomodguard.yml",
-		".gomodguard.json",
+		".gomodguard.jsonc",
 	} {
 		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); err == nil {
