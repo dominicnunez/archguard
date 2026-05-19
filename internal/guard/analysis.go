@@ -27,6 +27,7 @@ const (
 	ruleCompositionSetterCall    = "composition-root-setter-call"
 	ruleCompositionDomainConvert = "composition-root-domain-conversion"
 	ruleSQLCrossModuleTable      = "sql-cross-module-table"
+	ruleForbiddenImport          = "forbidden-import"
 	portsLayerName               = "ports"
 	adaptersLayerName            = "adapters"
 	maxPortsInterfacesPerFile    = 8
@@ -65,6 +66,7 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 	for _, profile := range enabledAnalysisProfiles(cfg) {
 		switch profile {
 		case profileModularMonolith:
+			violations = append(violations, checkForbiddenImports(cfg, pkgs)...)
 			violations = append(violations, checkExportedAPIExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkAppInterfaceExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkProtocolDTOsInPorts(cfg, pkgs)...)
@@ -80,6 +82,45 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 	sortViolations(violations)
 	violations = dedupeViolations(violations)
 	return violations, nil
+}
+
+func checkForbiddenImports(cfg Config, pkgs []LoadedPackage) []Violation {
+	if len(cfg.Analysis.ForbiddenImports) == 0 {
+		return nil
+	}
+	var violations []Violation
+	for _, pkg := range pkgs {
+		from := classifyLoadedPackage(cfg, pkg)
+		if ignored(cfg, from) {
+			continue
+		}
+		for importPath := range pkg.Imports {
+			for _, forbidden := range cfg.Analysis.ForbiddenImports {
+				if !selectorMatches(forbidden.From, from) || !forbiddenImportMatches(forbidden, importPath) {
+					continue
+				}
+				message := "import is forbidden by analysis policy"
+				if forbidden.Reason != "" {
+					message = forbidden.Reason
+				}
+				violations = append(violations, Violation{
+					Rule:    ruleForbiddenImport,
+					From:    from.RelPath,
+					To:      importPath,
+					Message: message,
+				})
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func forbiddenImportMatches(forbidden ForbiddenImportConfig, importPath string) bool {
+	if forbidden.Package != "" && wildcardMatch(forbidden.Package, importPath) {
+		return true
+	}
+	return len(forbidden.Packages) > 0 && matchesAny(forbidden.Packages, importPath)
 }
 
 func checkAppInterfaceExternalTypes(cfg Config, pkgs []LoadedPackage) []Violation {

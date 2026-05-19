@@ -96,6 +96,13 @@ analysis:
   table_owners:
     - module: market
       tables: [wallets, wallet_clusters]
+  forbidden_imports:
+    - name: app-infra-imports
+      from:
+        layer: app
+      packages:
+        - github.com/jackc/pgx/**
+      reason: app packages must not import persistence-driver packages
 ```
 
 ## Rule Model
@@ -112,6 +119,7 @@ analysis:
 - `analysis.include_tests` includes Go test variants in import checks and profile checks.
 - `analysis.profiles` enables reusable built-in checks such as `modular-monolith`.
 - `analysis.table_owners` maps table names or wildcard patterns to owning modules for SQL ownership checks when table names do not follow module-name conventions.
+- `analysis.forbidden_imports` rejects configured external or internal imports from selected packages; use it for infrastructure dependencies that must stay out of app/domain layers.
 - `modular-monolith` reports exported `ports` APIs that reference non-stdlib external dependency types.
 - `modular-monolith` reports exported `app` interfaces that expose non-stdlib external dependency types.
 - `modular-monolith` reports exported `ports` structs with protocol field tags such as `json`.

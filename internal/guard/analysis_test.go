@@ -259,6 +259,34 @@ func TestCheckProfilesUsesConfiguredSQLTableOwners(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsForbiddenImports(t *testing.T) {
+	dir := writeForbiddenImportFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.ForbiddenImports = []ForbiddenImportConfig{{
+		Name:    "app-infra",
+		From:    Selector{Layer: "app"},
+		Package: "example.com/infra",
+		Reason:  "app packages must not import infrastructure packages",
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleForbiddenImport)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleForbiddenImport, violations)
+	}
+	if violation.From != "internal/creator/app" || violation.To != "example.com/infra" {
+		t.Fatalf("violation = %+v; want creator app importing example.com/infra", violation)
+	}
+}
+
 func writeExternalTypeFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -289,6 +317,28 @@ type Repository interface {
 import "example.com/sdk"
 
 func Build() sdk.External { return sdk.External{} }
+`)
+	return dir
+}
+
+func writeForbiddenImportFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", `module example.com/app
+
+go 1.23
+
+require example.com/infra v0.0.0
+
+replace example.com/infra => ./infra
+`)
+	writeTestFile(t, dir, "infra/go.mod", "module example.com/infra\n\ngo 1.23\n")
+	writeTestFile(t, dir, "infra/infra.go", "package infra\n\nfunc Use() {}\n")
+	writeTestFile(t, dir, "internal/creator/app/app.go", `package app
+
+import "example.com/infra"
+
+func Run() { infra.Use() }
 `)
 	return dir
 }

@@ -72,15 +72,24 @@ type IgnoreConfig struct {
 }
 
 type AnalysisConfig struct {
-	IncludeTests bool               `json:"include_tests" yaml:"include_tests"`
-	Profiles     []string           `json:"profiles" yaml:"profiles"`
-	TableOwners  []TableOwnerConfig `json:"table_owners" yaml:"table_owners"`
+	IncludeTests     bool                    `json:"include_tests" yaml:"include_tests"`
+	Profiles         []string                `json:"profiles" yaml:"profiles"`
+	TableOwners      []TableOwnerConfig      `json:"table_owners" yaml:"table_owners"`
+	ForbiddenImports []ForbiddenImportConfig `json:"forbidden_imports" yaml:"forbidden_imports"`
 }
 
 type TableOwnerConfig struct {
 	Module string   `json:"module" yaml:"module"`
 	Table  string   `json:"table" yaml:"table"`
 	Tables []string `json:"tables" yaml:"tables"`
+}
+
+type ForbiddenImportConfig struct {
+	Name     string   `json:"name" yaml:"name"`
+	From     Selector `json:"from" yaml:"from"`
+	Package  string   `json:"package" yaml:"package"`
+	Packages []string `json:"packages" yaml:"packages"`
+	Reason   string   `json:"reason" yaml:"reason"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -143,6 +152,17 @@ func (c Config) Validate() error {
 		}
 		if owner.Table == "" && len(owner.Tables) == 0 {
 			return fmt.Errorf("config analysis.table_owners[%d].table or tables is required", i)
+		}
+	}
+	for i, forbidden := range c.Analysis.ForbiddenImports {
+		if forbidden.Name == "" {
+			return fmt.Errorf("config analysis.forbidden_imports[%d].name is required", i)
+		}
+		if !selectorConfigured(forbidden.From) {
+			return fmt.Errorf("config analysis.forbidden_imports[%d].from is required", i)
+		}
+		if forbidden.Package == "" && len(forbidden.Packages) == 0 {
+			return fmt.Errorf("config analysis.forbidden_imports[%d].package or packages is required", i)
 		}
 	}
 	return nil
