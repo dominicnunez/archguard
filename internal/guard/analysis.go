@@ -18,6 +18,7 @@ const (
 	ruleExportedAPIExternalType  = "exported-api-external-type"
 	ruleAppInterfaceExternalType = "app-interface-external-type"
 	ruleProtocolDTOInPorts       = "protocol-dto-in-ports"
+	ruleProtocolTagInDomain      = "protocol-tag-in-domain"
 	rulePrimitiveTimeInPorts     = "primitive-time-in-ports"
 	ruleBroadPortsFile           = "broad-ports-file"
 	ruleBroadPortsInterface      = "broad-ports-interface"
@@ -74,6 +75,7 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 		case profileModularMonolith:
 			violations = append(violations, checkExternalImportAllowlist(cfg, pkgs)...)
 			violations = append(violations, checkPortsAdapterImports(cfg, pkgs)...)
+			violations = append(violations, checkProtocolTagsInDomain(cfg, pkgs)...)
 			violations = append(violations, checkExportedAPIExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkAppInterfaceExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkProtocolDTOsInPorts(cfg, pkgs)...)
@@ -225,6 +227,23 @@ func checkProtocolDTOsInPorts(cfg Config, pkgs []LoadedPackage) []Violation {
 		for _, file := range pkg.Syntax {
 			for _, decl := range file.Decls {
 				violations = append(violations, protocolDTOTypeViolations(pkg, decl)...)
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkProtocolTagsInDomain(cfg Config, pkgs []LoadedPackage) []Violation {
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if info.Layer != "domain" {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			for _, decl := range file.Decls {
+				violations = append(violations, domainProtocolTagViolations(pkg, decl)...)
 			}
 		}
 	}
@@ -620,6 +639,15 @@ func protocolDTOTypeViolations(pkg LoadedPackage, decl ast.Decl) []Violation {
 			To:      strings.Join(tags, ", "),
 			Message: fmt.Sprintf("exported ports struct %q has protocol field tags", typeSpec.Name.Name),
 		})
+	}
+	return violations
+}
+
+func domainProtocolTagViolations(pkg LoadedPackage, decl ast.Decl) []Violation {
+	violations := protocolDTOTypeViolations(pkg, decl)
+	for i := range violations {
+		violations[i].Rule = ruleProtocolTagInDomain
+		violations[i].Message = strings.Replace(violations[i].Message, "exported ports struct", "exported domain struct", 1)
 	}
 	return violations
 }

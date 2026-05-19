@@ -72,6 +72,31 @@ func TestCheckProfilesFindsProtocolDTOsInPorts(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsProtocolTagsInDomain(t *testing.T) {
+	dir := writeDomainProtocolTagFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleProtocolTagInDomain)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleProtocolTagInDomain, violations)
+	}
+	if !strings.Contains(violation.From, "internal/creator/domain/types.go") {
+		t.Fatalf("From = %q; want domain file", violation.From)
+	}
+	if violation.To != "json" {
+		t.Fatalf("To = %q; want json", violation.To)
+	}
+}
+
 func TestCheckProfilesFindsAppInterfaceExternalTypes(t *testing.T) {
 	dir := writeAppInterfaceExternalTypeFixture(t)
 	cfg := externalTypeConfig()
@@ -470,6 +495,25 @@ func writeProtocolDTOFixture(t *testing.T) string {
 	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
 	writeTestFile(t, dir, "internal/creator/ports/ports.go", "package ports\n\ntype HTTPResponse struct {\n\tID      string `json:\"id\"`\n\tIgnored string `json:\"-\"`\n}\n")
 	writeTestFile(t, dir, "internal/creator/app/app.go", "package app\n\ntype AppResponse struct {\n\tID string `json:\"id\"`\n}\n")
+	return dir
+}
+
+func writeDomainProtocolTagFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/creator/domain/types.go", `package domain
+
+type CreatorStats struct {
+	WalletAddress string `+"`json:\"wallet_address\"`"+`
+}
+`)
+	writeTestFile(t, dir, "internal/creator/app/app.go", `package app
+
+type CreatorResponse struct {
+	WalletAddress string `+"`json:\"wallet_address\"`"+`
+}
+`)
 	return dir
 }
 
