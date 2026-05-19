@@ -106,6 +106,68 @@ func TestCheckUsesFromRelPathForTestPackages(t *testing.T) {
 	}
 }
 
+func TestCheckAllowsTestOnlySelectorForTestImports(t *testing.T) {
+	testsOnly := true
+	cfg := testConfig()
+	cfg.Policy.Allow = append(cfg.Policy.Allow, PolicyAllowConfig{
+		Name: "creator-test-support",
+		From: Selector{Path: "internal/creator/app", Tests: &testsOnly},
+		To:   TargetSelector{Path: "internal/market/adapters/postgres"},
+	})
+	edges := []ImportEdge{
+		{
+			From:        "example.com/app/internal/creator/app_test",
+			FromRelPath: "internal/creator/app",
+			To:          "example.com/app/internal/market/adapters/postgres",
+			Test:        true,
+		},
+		{
+			From: "example.com/app/internal/creator/app",
+			To:   "example.com/app/internal/market/adapters/postgres",
+		},
+	}
+
+	violations := Check(cfg, edges)
+
+	if len(violations) != 1 {
+		t.Fatalf("Check() violations = %d; want 1", len(violations))
+	}
+	if violations[0].From != "internal/creator/app" || violations[0].To != "internal/market/adapters/postgres" {
+		t.Fatalf("violation = %+v; want production edge only", violations[0])
+	}
+}
+
+func TestCheckAllowsProductionOnlySelectorForProductionImports(t *testing.T) {
+	productionOnly := false
+	cfg := testConfig()
+	cfg.Policy.Allow = append(cfg.Policy.Allow, PolicyAllowConfig{
+		Name: "creator-production-support",
+		From: Selector{Path: "internal/creator/app", Tests: &productionOnly},
+		To:   TargetSelector{Path: "internal/market/adapters/postgres"},
+	})
+	edges := []ImportEdge{
+		{
+			From: "example.com/app/internal/creator/app",
+			To:   "example.com/app/internal/market/adapters/postgres",
+		},
+		{
+			From:        "example.com/app/internal/creator/app_test",
+			FromRelPath: "internal/creator/app",
+			To:          "example.com/app/internal/market/adapters/postgres",
+			Test:        true,
+		},
+	}
+
+	violations := Check(cfg, edges)
+
+	if len(violations) != 1 {
+		t.Fatalf("Check() violations = %d; want 1", len(violations))
+	}
+	if violations[0].From != "internal/creator/app" || violations[0].To != "internal/market/adapters/postgres" {
+		t.Fatalf("violation = %+v; want test edge only", violations[0])
+	}
+}
+
 func TestCheckIgnoresConfiguredPaths(t *testing.T) {
 	cfg := testConfig()
 	cfg.Ignore = []IgnoreConfig{{Path: "internal/creator/app", Reason: "generated"}}

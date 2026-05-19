@@ -23,6 +23,7 @@ type packageInfo struct {
 	Module     string
 	Layer      string
 	Internal   bool
+	Test       bool
 }
 
 func Check(cfg Config, edges []ImportEdge) []Violation {
@@ -59,6 +60,7 @@ func sortViolations(violations []Violation) {
 
 func classifyEdgeFrom(cfg Config, edge ImportEdge) packageInfo {
 	info := classifyPackage(cfg, edge.From)
+	info.Test = edge.Test
 	if !edge.Test || edge.FromRelPath == "" {
 		return info
 	}
@@ -133,6 +135,9 @@ func matchingLayer(layers []LayerConfig, moduleSuffix string) string {
 }
 
 func selectorMatches(selector Selector, info packageInfo) bool {
+	if selector.Tests != nil && *selector.Tests != info.Test {
+		return false
+	}
 	if selector.Module != "" && !wildcardMatch(selector.Module, info.Module) {
 		return false
 	}
@@ -142,7 +147,7 @@ func selectorMatches(selector Selector, info packageInfo) bool {
 	if selector.Path != "" && !pathSelectorMatches(selector.Path, info) {
 		return false
 	}
-	return selector.Module != "" || selector.Layer != "" || selector.Path != ""
+	return selectorConfigured(selector)
 }
 
 func policyAllows(cfg Config, from, to packageInfo) bool {

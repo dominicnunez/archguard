@@ -24,6 +24,7 @@ policy:
   - name: app-internal
     from:
       layer: app
+      tests: true
     to:
       internal: true
 analysis:
@@ -50,6 +51,9 @@ analysis:
 	}
 	if got := cfg.AnalysisProfiles(); len(got) != 1 || got[0] != "modular-monolith" {
 		t.Fatalf("AnalysisProfiles() = %v; want [modular-monolith]", got)
+	}
+	if cfg.Policy.Allow[0].From.Tests == nil || !*cfg.Policy.Allow[0].From.Tests {
+		t.Fatalf("policy.allow[0].from.tests = %v; want true", cfg.Policy.Allow[0].From.Tests)
 	}
 }
 

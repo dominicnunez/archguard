@@ -41,6 +41,7 @@ type Selector struct {
 	Module string `json:"module" yaml:"module"`
 	Layer  string `json:"layer" yaml:"layer"`
 	Path   string `json:"path" yaml:"path"`
+	Tests  *bool  `json:"tests" yaml:"tests"`
 }
 
 type PolicyConfig struct {
@@ -133,7 +134,7 @@ func (c Config) Validate() error {
 }
 
 func selectorConfigured(selector Selector) bool {
-	return selector.Module != "" || selector.Layer != "" || selector.Path != ""
+	return selector.Module != "" || selector.Layer != "" || selector.Path != "" || selector.Tests != nil
 }
 
 func targetSelectorConfigured(selector TargetSelector) bool {

@@ -91,6 +91,7 @@ analysis:
 - `layers` identify conventional subdirectories within modules.
 - `policy.default` must be `deny`; internal imports are rejected unless an allow rule matches.
 - `policy.allow` entries select importers with `from`, then allow target imports with `to`.
+- `from.tests: true` restricts an allow rule to test import edges; `from.tests: false` restricts it to production import edges.
 - `to.same_module` allows imports only when source and target are in the same configured module.
 - `to.internal` allows imports to any internal package.
 - `to.module`, `to.modules`, `to.layer`, `to.layers`, `to.path`, and `to.paths` narrow allowed targets.
