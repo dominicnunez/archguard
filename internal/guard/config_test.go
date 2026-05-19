@@ -8,7 +8,7 @@ import (
 
 func TestLoadConfigYAML(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, ".gomodguard.yaml")
+	path := filepath.Join(dir, ".archguard.yaml")
 	data := []byte(`version: 1
 packages:
   root: example.com/app
@@ -55,7 +55,7 @@ analysis:
 
 func TestLoadConfigJSONC(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, ".gomodguard.jsonc")
+	path := filepath.Join(dir, ".archguard.jsonc")
 	data := []byte(`{
   // Required config version.
   "version": 1,
@@ -82,7 +82,7 @@ func TestLoadConfigJSONC(t *testing.T) {
 
 func TestLoadConfigRejectsJSON(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, ".gomodguard.json")
+	path := filepath.Join(dir, ".archguard.json")
 	data := []byte(`{"version": 1, "packages": {"root": "example.com/app"}, "policy": {"default": "deny", "allow": [{"name": "same-module", "from": {"module": "*"}, "to": {"same_module": true}}]}}`)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -95,8 +95,8 @@ func TestLoadConfigRejectsJSON(t *testing.T) {
 
 func TestFindConfigPrefersNonDotConfig(t *testing.T) {
 	dir := t.TempDir()
-	nonDot := filepath.Join(dir, "gomodguard.yml")
-	dot := filepath.Join(dir, ".gomodguard.yaml")
+	nonDot := filepath.Join(dir, "archguard.yml")
+	dot := filepath.Join(dir, ".archguard.yaml")
 	data := []byte("version: 1\npackages:\n  root: example.com/app\npolicy:\n  default: deny\n  allow:\n    - name: same-module\n      from:\n        module: '*'\n      to:\n        same_module: true\n")
 	if err := os.WriteFile(nonDot, data, 0o600); err != nil {
 		t.Fatalf("write non-dot config: %v", err)
@@ -130,7 +130,7 @@ func TestLoadConfigValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			path := filepath.Join(dir, "gomodguard.yml")
+			path := filepath.Join(dir, "archguard.yml")
 			if err := os.WriteFile(path, []byte(tt.data), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}

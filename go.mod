@@ -1,4 +1,4 @@
-module github.com/dominicnunez/gomodguard
+module github.com/dominicnunez/archguard
 
 go 1.23.0
 

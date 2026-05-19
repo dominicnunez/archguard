@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dominicnunez/gomodguard/internal/guard"
+	"github.com/dominicnunez/archguard/internal/guard"
 )
 
 func TestRunCheckIncludeTestsFlag(t *testing.T) {
@@ -26,7 +26,7 @@ func writeCLIFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	writeCLIFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
-	writeCLIFile(t, dir, "gomodguard.yml", `version: 1
+	writeCLIFile(t, dir, "archguard.yml", `version: 1
 packages:
   root: example.com/app
 modules:

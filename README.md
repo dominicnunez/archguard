@@ -1,31 +1,31 @@
-# gomodguard
+# archguard
 
-`gomodguard` checks Go modular-monolith import boundaries from a project-local config file.
+`archguard` checks Go modular-monolith import boundaries from a project-local config file.
 
 It is intentionally configuration-driven: the tool knows how to load a Go import graph and evaluate a default-deny import policy, while each repository defines its own modules, layers, and allowed boundary crossings.
 
 ## Usage
 
 ```bash
-gomodguard check
-gomodguard check --config .gomodguard.yaml
-gomodguard check --dir /path/to/repo --config /path/to/repo/.gomodguard.yaml
-gomodguard check --config .gomodguard.jsonc
-gomodguard check --include-tests --profile modular-monolith
+archguard check
+archguard check --config .archguard.yaml
+archguard check --dir /path/to/repo --config /path/to/repo/.archguard.yaml
+archguard check --config .archguard.jsonc
+archguard check --include-tests --profile modular-monolith
 ```
 
-By default, `gomodguard check` looks for one of:
+By default, `archguard check` looks for one of:
 
-- `gomodguard.yaml`
-- `gomodguard.yml`
-- `gomodguard.jsonc`
-- `.gomodguard.yaml`
-- `.gomodguard.yml`
-- `.gomodguard.jsonc`
+- `archguard.yaml`
+- `archguard.yml`
+- `archguard.jsonc`
+- `.archguard.yaml`
+- `.archguard.yml`
+- `.archguard.jsonc`
 
 ## Config
 
-See `examples/thor.gomodguard.yaml` for a real modular-monolith config.
+See `examples/thor.archguard.yaml` for a real modular-monolith config.
 JSONC config files support comments and trailing commas.
 
 ```yaml

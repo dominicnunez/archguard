@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dominicnunez/gomodguard/internal/guard"
+	"github.com/dominicnunez/archguard/internal/guard"
 )
 
 type stringListFlag []string
@@ -28,7 +28,7 @@ func main() {
 		if errors.Is(err, guard.ErrViolationsFound) {
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "gomodguard: %v\n", err)
+		fmt.Fprintf(os.Stderr, "archguard: %v\n", err)
 		os.Exit(2)
 	}
 }
@@ -53,7 +53,7 @@ func run(args []string) error {
 func runCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	configPath := fs.String("config", "", "path to .gomodguard.yaml, .gomodguard.yml, or .gomodguard.jsonc")
+	configPath := fs.String("config", "", "path to .archguard.yaml, .archguard.yml, or .archguard.jsonc")
 	dir := fs.String("dir", ".", "repository directory to analyze")
 	includeTests := fs.Bool("include-tests", false, "include Go test variants in import and analysis checks")
 	var cliProfiles stringListFlag
@@ -104,7 +104,7 @@ func runCheck(args []string) error {
 		return err
 	}
 	if len(violations) == 0 {
-		fmt.Fprintln(os.Stdout, "gomodguard: no boundary violations")
+		fmt.Fprintln(os.Stdout, "archguard: no boundary violations")
 		return nil
 	}
 
@@ -113,7 +113,7 @@ func runCheck(args []string) error {
 }
 
 func printViolations(out *os.File, violations []guard.Violation) {
-	fmt.Fprintf(out, "gomodguard: %d boundary violation(s)\n", len(violations))
+	fmt.Fprintf(out, "archguard: %d boundary violation(s)\n", len(violations))
 	for _, violation := range violations {
 		fmt.Fprintf(out, "\n%s\n", violation.Rule)
 		fmt.Fprintf(out, "  from: %s\n", violation.From)
@@ -123,10 +123,10 @@ func printViolations(out *os.File, violations []guard.Violation) {
 }
 
 func printUsage(out *os.File) {
-	usage := strings.TrimSpace(`gomodguard checks Go modular-monolith import boundaries.
+	usage := strings.TrimSpace(`archguard checks Go modular-monolith import boundaries.
 
 Usage:
-  gomodguard check [--config .gomodguard.yaml] [--dir .] [--include-tests] [--profile name] [patterns...]
-  gomodguard help`)
+  archguard check [--config .archguard.yaml] [--dir .] [--include-tests] [--profile name] [patterns...]
+  archguard help`)
 	fmt.Fprintln(out, usage)
 }

@@ -142,12 +142,12 @@ func targetSelectorConfigured(selector TargetSelector) bool {
 
 func FindConfig(dir string) (string, error) {
 	for _, name := range []string{
-		"gomodguard.yaml",
-		"gomodguard.yml",
-		"gomodguard.jsonc",
-		".gomodguard.yaml",
-		".gomodguard.yml",
-		".gomodguard.jsonc",
+		"archguard.yaml",
+		"archguard.yml",
+		"archguard.jsonc",
+		".archguard.yaml",
+		".archguard.yml",
+		".archguard.jsonc",
 	} {
 		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); err == nil {
@@ -156,7 +156,7 @@ func FindConfig(dir string) (string, error) {
 			return "", fmt.Errorf("stat config %s: %w", path, err)
 		}
 	}
-	return "", fmt.Errorf("no gomodguard config found in %s", dir)
+	return "", fmt.Errorf("no archguard config found in %s", dir)
 }
 
 func (c Config) PackagePatterns() []string {
