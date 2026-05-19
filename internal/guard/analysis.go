@@ -16,7 +16,9 @@ import (
 const (
 	profileModularMonolith       = "modular-monolith"
 	ruleExportedAPIExternalType  = "exported-api-external-type"
+	ruleAppInterfaceExternalType = "app-interface-external-type"
 	ruleProtocolDTOInPorts       = "protocol-dto-in-ports"
+	rulePrimitiveTimeInPorts     = "primitive-time-in-ports"
 	ruleBroadPortsFile           = "broad-ports-file"
 	ruleBroadPortsInterface      = "broad-ports-interface"
 	ruleAdapterEmbedsForeignPort = "adapter-embeds-foreign-port"
@@ -54,6 +56,7 @@ func CheckLoadedPackages(cfg Config, pkgs []LoadedPackage) ([]Violation, error) 
 	}
 	violations = append(violations, profileViolations...)
 	sortViolations(violations)
+	violations = dedupeViolations(violations)
 	return violations, nil
 }
 
@@ -63,7 +66,9 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 		switch profile {
 		case profileModularMonolith:
 			violations = append(violations, checkExportedAPIExternalTypes(cfg, pkgs)...)
+			violations = append(violations, checkAppInterfaceExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkProtocolDTOsInPorts(cfg, pkgs)...)
+			violations = append(violations, checkPrimitiveTimeFieldsInPorts(cfg, pkgs)...)
 			violations = append(violations, checkBroadPortsSurfaces(cfg, pkgs)...)
 			violations = append(violations, checkThinAdapters(cfg, pkgs)...)
 			violations = append(violations, checkCompositionRootPatterns(cfg, pkgs)...)
@@ -73,7 +78,25 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 		}
 	}
 	sortViolations(violations)
+	violations = dedupeViolations(violations)
 	return violations, nil
+}
+
+func checkAppInterfaceExternalTypes(cfg Config, pkgs []LoadedPackage) []Violation {
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if info.Layer != "app" || pkg.Types == nil || pkg.TypesInfo == nil {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			for _, decl := range file.Decls {
+				violations = append(violations, exportedInterfaceExternalTypeViolations(cfg, pkg, decl)...)
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
 }
 
 func enabledAnalysisProfiles(cfg Config) []string {
@@ -121,6 +144,23 @@ func checkProtocolDTOsInPorts(cfg Config, pkgs []LoadedPackage) []Violation {
 		for _, file := range pkg.Syntax {
 			for _, decl := range file.Decls {
 				violations = append(violations, protocolDTOTypeViolations(pkg, decl)...)
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkPrimitiveTimeFieldsInPorts(cfg Config, pkgs []LoadedPackage) []Violation {
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if info.Layer != portsLayerName || pkg.TypesInfo == nil {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			for _, decl := range file.Decls {
+				violations = append(violations, primitiveTimeFieldViolations(pkg, decl)...)
 			}
 		}
 	}
@@ -371,6 +411,30 @@ func exportedDeclExternalTypeViolations(cfg Config, pkg LoadedPackage, decl ast.
 	}
 }
 
+func exportedInterfaceExternalTypeViolations(cfg Config, pkg LoadedPackage, decl ast.Decl) []Violation {
+	genDecl, ok := decl.(*ast.GenDecl)
+	if !ok {
+		return nil
+	}
+	var violations []Violation
+	for _, spec := range genDecl.Specs {
+		typeSpec, ok := spec.(*ast.TypeSpec)
+		if !ok || typeSpec.Name == nil || !ast.IsExported(typeSpec.Name.Name) {
+			continue
+		}
+		if _, ok := typeSpec.Type.(*ast.InterfaceType); !ok {
+			continue
+		}
+		refs := externalTypeViolationsForObject(cfg, pkg, typeSpec.Name, typeSpec.Name.Name)
+		for _, violation := range refs {
+			violation.Rule = ruleAppInterfaceExternalType
+			violation.Message = fmt.Sprintf("exported app interface %q references external dependency type(s)", typeSpec.Name.Name)
+			violations = append(violations, violation)
+		}
+	}
+	return violations
+}
+
 func externalTypeViolationsForObject(cfg Config, pkg LoadedPackage, ident *ast.Ident, name string) []Violation {
 	obj := pkg.TypesInfo.Defs[ident]
 	if obj == nil {
@@ -413,6 +477,38 @@ func protocolDTOTypeViolations(pkg LoadedPackage, decl ast.Decl) []Violation {
 			To:      strings.Join(tags, ", "),
 			Message: fmt.Sprintf("exported ports struct %q has protocol field tags", typeSpec.Name.Name),
 		})
+	}
+	return violations
+}
+
+func primitiveTimeFieldViolations(pkg LoadedPackage, decl ast.Decl) []Violation {
+	genDecl, ok := decl.(*ast.GenDecl)
+	if !ok {
+		return nil
+	}
+	var violations []Violation
+	for _, spec := range genDecl.Specs {
+		typeSpec, ok := spec.(*ast.TypeSpec)
+		if !ok || typeSpec.Name == nil || !ast.IsExported(typeSpec.Name.Name) {
+			continue
+		}
+		structType, ok := typeSpec.Type.(*ast.StructType)
+		if !ok || structType.Fields == nil {
+			continue
+		}
+		for _, field := range structType.Fields.List {
+			if !isPrimitiveTimeField(pkg, field) {
+				continue
+			}
+			for _, name := range field.Names {
+				violations = append(violations, Violation{
+					Rule:    rulePrimitiveTimeInPorts,
+					From:    positionString(pkg, name.Pos()),
+					To:      typeSpec.Name.Name + "." + name.Name,
+					Message: "exported ports struct uses primitive numeric time field instead of a domain time value",
+				})
+			}
+		}
 	}
 	return violations
 }
@@ -867,9 +963,26 @@ func normalizeSQLTable(table string) string {
 }
 
 func tableOwnerModule(cfg Config, table string) string {
+	if owner := configuredTableOwnerModule(cfg, table); owner != "" {
+		return owner
+	}
 	for _, module := range cfg.Modules {
 		if tableMatchesModule(table, module.Name) {
 			return module.Name
+		}
+	}
+	return ""
+}
+
+func configuredTableOwnerModule(cfg Config, table string) string {
+	for _, owner := range cfg.Analysis.TableOwners {
+		if owner.Table != "" && wildcardMatch(strings.ToLower(owner.Table), table) {
+			return owner.Module
+		}
+		for _, pattern := range owner.Tables {
+			if wildcardMatch(strings.ToLower(pattern), table) {
+				return owner.Module
+			}
 		}
 	}
 	return ""
@@ -934,6 +1047,47 @@ func protocolTags(structType *ast.StructType) []string {
 	}
 	sort.Strings(tags)
 	return tags
+}
+
+func isPrimitiveTimeField(pkg LoadedPackage, field *ast.Field) bool {
+	if len(field.Names) == 0 {
+		return false
+	}
+	matchedName := false
+	for _, name := range field.Names {
+		if name != nil && ast.IsExported(name.Name) && isTimeLikeFieldName(name.Name) {
+			matchedName = true
+			break
+		}
+	}
+	if !matchedName || pkg.TypesInfo == nil {
+		return false
+	}
+	t := pkg.TypesInfo.TypeOf(field.Type)
+	if t == nil {
+		return false
+	}
+	for {
+		ptr, ok := t.(*types.Pointer)
+		if !ok {
+			break
+		}
+		t = ptr.Elem()
+	}
+	basic, ok := t.Underlying().(*types.Basic)
+	if !ok {
+		return false
+	}
+	switch basic.Kind() {
+	case types.Int, types.Int8, types.Int16, types.Int32, types.Int64, types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTimeLikeFieldName(name string) bool {
+	return strings.HasSuffix(name, "Timestamp") || strings.HasSuffix(name, "Time") || strings.HasSuffix(name, "At")
 }
 
 func externalTypeRefs(t types.Type, current *types.Package, root string) []externalTypeRef {

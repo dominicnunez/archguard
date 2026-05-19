@@ -93,6 +93,9 @@ analysis:
   include_tests: true
   profiles:
     - modular-monolith
+  table_owners:
+    - module: market
+      tables: [wallets, wallet_clusters]
 ```
 
 ## Rule Model
@@ -108,8 +111,11 @@ analysis:
 - `ignore` entries exclude known generated or out-of-scope paths from import checks.
 - `analysis.include_tests` includes Go test variants in import checks and profile checks.
 - `analysis.profiles` enables reusable built-in checks such as `modular-monolith`.
+- `analysis.table_owners` maps table names or wildcard patterns to owning modules for SQL ownership checks when table names do not follow module-name conventions.
 - `modular-monolith` reports exported `ports` APIs that reference non-stdlib external dependency types.
+- `modular-monolith` reports exported `app` interfaces that expose non-stdlib external dependency types.
 - `modular-monolith` reports exported `ports` structs with protocol field tags such as `json`.
+- `modular-monolith` reports exported `ports` structs that expose primitive numeric time fields such as integer timestamps.
 - `modular-monolith` reports broad `ports` files and non-persistence interfaces with large method surfaces. Persistence-shaped ports ending in `Repository` or `DataSource` are excluded from this broad-surface heuristic.
 - `modular-monolith` reports thin adapters that embed foreign ports or only forward calls.
 - `modular-monolith` reports composition-root mutation, Set-style wiring, domain conversions, and cross-module SQL table references.

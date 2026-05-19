@@ -58,6 +58,22 @@ func sortViolations(violations []Violation) {
 	})
 }
 
+func dedupeViolations(violations []Violation) []Violation {
+	if len(violations) == 0 {
+		return nil
+	}
+	seen := make(map[Violation]struct{}, len(violations))
+	unique := make([]Violation, 0, len(violations))
+	for _, violation := range violations {
+		if _, ok := seen[violation]; ok {
+			continue
+		}
+		seen[violation] = struct{}{}
+		unique = append(unique, violation)
+	}
+	return unique
+}
+
 func classifyEdgeFrom(cfg Config, edge ImportEdge) packageInfo {
 	info := classifyPackage(cfg, edge.From)
 	info.Test = edge.Test

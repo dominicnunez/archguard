@@ -72,6 +72,50 @@ func TestCheckProfilesFindsProtocolDTOsInPorts(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsAppInterfaceExternalTypes(t *testing.T) {
+	dir := writeAppInterfaceExternalTypeFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleAppInterfaceExternalType)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleAppInterfaceExternalType, violations)
+	}
+	if violation.To != "example.com/sdk.ExternalID" {
+		t.Fatalf("To = %q; want example.com/sdk.ExternalID", violation.To)
+	}
+}
+
+func TestCheckProfilesFindsPrimitiveTimeFieldsInPorts(t *testing.T) {
+	dir := writePrimitiveTimePortsFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, rulePrimitiveTimeInPorts)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", rulePrimitiveTimeInPorts, violations)
+	}
+	if violation.To != "CoinDetails.LastTradeTimestamp" {
+		t.Fatalf("To = %q; want CoinDetails.LastTradeTimestamp", violation.To)
+	}
+}
+
 func TestCheckProfilesFindsBroadPortsSurfaces(t *testing.T) {
 	dir := writeBroadPortsFixture(t)
 	cfg := externalTypeConfig()
@@ -192,6 +236,29 @@ func TestCheckProfilesFindsCrossModuleSQLTables(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesUsesConfiguredSQLTableOwners(t *testing.T) {
+	dir := writeConfiguredSQLTableFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.TableOwners = []TableOwnerConfig{{Module: "creator", Tables: []string{"wallets"}}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleSQLCrossModuleTable)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleSQLCrossModuleTable, violations)
+	}
+	if violation.To != "wallets (creator)" {
+		t.Fatalf("SQL table To = %q; want wallets (creator)", violation.To)
+	}
+}
+
 func writeExternalTypeFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -232,6 +299,48 @@ func writeProtocolDTOFixture(t *testing.T) string {
 	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
 	writeTestFile(t, dir, "internal/creator/ports/ports.go", "package ports\n\ntype HTTPResponse struct {\n\tID      string `json:\"id\"`\n\tIgnored string `json:\"-\"`\n}\n")
 	writeTestFile(t, dir, "internal/creator/app/app.go", "package app\n\ntype AppResponse struct {\n\tID string `json:\"id\"`\n}\n")
+	return dir
+}
+
+func writeAppInterfaceExternalTypeFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", `module example.com/app
+
+go 1.23
+
+require example.com/sdk v0.0.0
+
+replace example.com/sdk => ./sdk
+`)
+	writeTestFile(t, dir, "sdk/go.mod", "module example.com/sdk\n\ngo 1.23\n")
+	writeTestFile(t, dir, "sdk/sdk.go", "package sdk\n\ntype ExternalID string\n")
+	writeTestFile(t, dir, "internal/creator/app/app.go", `package app
+
+import (
+	"context"
+
+	"example.com/sdk"
+)
+
+type Provider interface {
+	Lookup(context.Context, sdk.ExternalID) error
+}
+`)
+	return dir
+}
+
+func writePrimitiveTimePortsFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/creator/ports/ports.go", `package ports
+
+type CoinDetails struct {
+	LastTradeTimestamp *int64
+	Name               string
+}
+`)
 	return dir
 }
 
@@ -361,6 +470,17 @@ func writeSQLTableFixture(t *testing.T) string {
 
 const localQuery = "SELECT * FROM tokens"
 const foreignQuery = "SELECT * FROM creator_stats WHERE wallet_address = $1"
+`)
+	return dir
+}
+
+func writeConfiguredSQLTableFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/token/adapters/postgres/repo.go", `package postgres
+
+const query = "TRUNCATE wallets CASCADE"
 `)
 	return dir
 }

@@ -72,8 +72,15 @@ type IgnoreConfig struct {
 }
 
 type AnalysisConfig struct {
-	IncludeTests bool     `json:"include_tests" yaml:"include_tests"`
-	Profiles     []string `json:"profiles" yaml:"profiles"`
+	IncludeTests bool               `json:"include_tests" yaml:"include_tests"`
+	Profiles     []string           `json:"profiles" yaml:"profiles"`
+	TableOwners  []TableOwnerConfig `json:"table_owners" yaml:"table_owners"`
+}
+
+type TableOwnerConfig struct {
+	Module string   `json:"module" yaml:"module"`
+	Table  string   `json:"table" yaml:"table"`
+	Tables []string `json:"tables" yaml:"tables"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -128,6 +135,14 @@ func (c Config) Validate() error {
 		}
 		if !targetSelectorConfigured(allow.To) {
 			return fmt.Errorf("config policy.allow[%d].to is required", i)
+		}
+	}
+	for i, owner := range c.Analysis.TableOwners {
+		if owner.Module == "" {
+			return fmt.Errorf("config analysis.table_owners[%d].module is required", i)
+		}
+		if owner.Table == "" && len(owner.Tables) == 0 {
+			return fmt.Errorf("config analysis.table_owners[%d].table or tables is required", i)
 		}
 	}
 	return nil
