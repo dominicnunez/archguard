@@ -259,6 +259,29 @@ func TestCheckProfilesUsesConfiguredSQLTableOwners(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsSQLTableOwnershipViolationsOutsideAdapters(t *testing.T) {
+	dir := writeSQLFixtureReachthroughFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.TableOwners = []TableOwnerConfig{{Module: "creator", Tables: []string{"wallets"}}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleSQLCrossModuleTable)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleSQLCrossModuleTable, violations)
+	}
+	if violation.To != "wallets (creator)" {
+		t.Fatalf("SQL table To = %q; want wallets (creator)", violation.To)
+	}
+}
+
 func TestCheckProfilesFindsExternalImportsOutsideAllowlist(t *testing.T) {
 	dir := writeExternalImportAllowlistFixture(t)
 	cfg := externalTypeConfig()
@@ -606,6 +629,22 @@ func writeConfiguredSQLTableFixture(t *testing.T) string {
 	writeTestFile(t, dir, "internal/token/adapters/postgres/repo.go", `package postgres
 
 const query = "TRUNCATE wallets CASCADE"
+`)
+	return dir
+}
+
+func writeSQLFixtureReachthroughFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/testhelpers/testdb.go", `package testhelpers
+
+import "database/sql"
+
+func EnsureWallet(db *sql.DB) {
+	_ = db
+	_ = "INSERT INTO wallets (address) VALUES ($1)"
+}
 `)
 	return dir
 }

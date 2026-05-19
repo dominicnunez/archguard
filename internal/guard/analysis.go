@@ -294,13 +294,25 @@ func checkSQLTableOwnership(cfg Config, pkgs []LoadedPackage) []Violation {
 	var violations []Violation
 	for _, pkg := range pkgs {
 		info := classifyLoadedPackage(cfg, pkg)
-		if info.Layer != adaptersLayerName || !strings.Contains(info.RelPath, "/adapters/postgres") || info.Module == "" {
+		if !packageCanAccessSQL(pkg, info) {
 			continue
 		}
 		violations = append(violations, sqlTableOwnershipViolations(cfg, pkg, info)...)
 	}
 	sortViolations(violations)
 	return violations
+}
+
+func packageCanAccessSQL(pkg LoadedPackage, info packageInfo) bool {
+	if info.Layer == adaptersLayerName && strings.Contains(info.RelPath, "/adapters/postgres") {
+		return true
+	}
+	for importPath := range pkg.Imports {
+		if importPath == "database/sql" || strings.HasPrefix(importPath, "github.com/jackc/pgx/") {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyLoadedPackage(cfg Config, pkg LoadedPackage) packageInfo {
@@ -449,7 +461,7 @@ func sqlTableOwnershipViolations(cfg Config, pkg LoadedPackage, info packageInfo
 					Rule:    ruleSQLCrossModuleTable,
 					From:    positionString(pkg, lit.Pos()),
 					To:      table + " (" + owner + ")",
-					Message: "postgres adapter SQL references a table inferred to belong to another module",
+					Message: "SQL references a table inferred to belong to another module",
 				})
 			}
 			return true
