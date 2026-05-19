@@ -164,9 +164,6 @@ func (c Config) Validate() error {
 		if !selectorConfigured(external.From) {
 			return fmt.Errorf("config analysis.external_imports[%d].from is required", i)
 		}
-		if external.Allow.Package == "" && len(external.Allow.Packages) == 0 {
-			return fmt.Errorf("config analysis.external_imports[%d].allow.package or allow.packages is required", i)
-		}
 	}
 	return nil
 }

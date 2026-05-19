@@ -288,6 +288,34 @@ func TestCheckProfilesFindsExternalImportsOutsideAllowlist(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsExternalImportsWithEmptyAllowlist(t *testing.T) {
+	dir := writeExternalImportAllowlistFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.ExternalImports = []ExternalImportConfig{{
+		Name: "domain-external-imports",
+		From: Selector{Layer: "app"},
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	var externalImportViolations []Violation
+	for _, violation := range violations {
+		if violation.Rule == ruleExternalImportNotAllowed {
+			externalImportViolations = append(externalImportViolations, violation)
+		}
+	}
+	if len(externalImportViolations) != 2 {
+		t.Fatalf("external import violations = %v; want two", externalImportViolations)
+	}
+}
+
 func writeExternalTypeFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
