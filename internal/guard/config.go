@@ -72,10 +72,10 @@ type IgnoreConfig struct {
 }
 
 type AnalysisConfig struct {
-	IncludeTests     bool                    `json:"include_tests" yaml:"include_tests"`
-	Profiles         []string                `json:"profiles" yaml:"profiles"`
-	TableOwners      []TableOwnerConfig      `json:"table_owners" yaml:"table_owners"`
-	ForbiddenImports []ForbiddenImportConfig `json:"forbidden_imports" yaml:"forbidden_imports"`
+	IncludeTests    bool                   `json:"include_tests" yaml:"include_tests"`
+	Profiles        []string               `json:"profiles" yaml:"profiles"`
+	TableOwners     []TableOwnerConfig     `json:"table_owners" yaml:"table_owners"`
+	ExternalImports []ExternalImportConfig `json:"external_imports" yaml:"external_imports"`
 }
 
 type TableOwnerConfig struct {
@@ -84,12 +84,15 @@ type TableOwnerConfig struct {
 	Tables []string `json:"tables" yaml:"tables"`
 }
 
-type ForbiddenImportConfig struct {
-	Name     string   `json:"name" yaml:"name"`
-	From     Selector `json:"from" yaml:"from"`
+type ExternalImportConfig struct {
+	Name  string                    `json:"name" yaml:"name"`
+	From  Selector                  `json:"from" yaml:"from"`
+	Allow ExternalImportAllowConfig `json:"allow" yaml:"allow"`
+}
+
+type ExternalImportAllowConfig struct {
 	Package  string   `json:"package" yaml:"package"`
 	Packages []string `json:"packages" yaml:"packages"`
-	Reason   string   `json:"reason" yaml:"reason"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -154,15 +157,15 @@ func (c Config) Validate() error {
 			return fmt.Errorf("config analysis.table_owners[%d].table or tables is required", i)
 		}
 	}
-	for i, forbidden := range c.Analysis.ForbiddenImports {
-		if forbidden.Name == "" {
-			return fmt.Errorf("config analysis.forbidden_imports[%d].name is required", i)
+	for i, external := range c.Analysis.ExternalImports {
+		if external.Name == "" {
+			return fmt.Errorf("config analysis.external_imports[%d].name is required", i)
 		}
-		if !selectorConfigured(forbidden.From) {
-			return fmt.Errorf("config analysis.forbidden_imports[%d].from is required", i)
+		if !selectorConfigured(external.From) {
+			return fmt.Errorf("config analysis.external_imports[%d].from is required", i)
 		}
-		if forbidden.Package == "" && len(forbidden.Packages) == 0 {
-			return fmt.Errorf("config analysis.forbidden_imports[%d].package or packages is required", i)
+		if external.Allow.Package == "" && len(external.Allow.Packages) == 0 {
+			return fmt.Errorf("config analysis.external_imports[%d].allow.package or allow.packages is required", i)
 		}
 	}
 	return nil

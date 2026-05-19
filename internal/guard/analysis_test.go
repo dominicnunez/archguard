@@ -259,14 +259,15 @@ func TestCheckProfilesUsesConfiguredSQLTableOwners(t *testing.T) {
 	}
 }
 
-func TestCheckProfilesFindsForbiddenImports(t *testing.T) {
-	dir := writeForbiddenImportFixture(t)
+func TestCheckProfilesFindsExternalImportsOutsideAllowlist(t *testing.T) {
+	dir := writeExternalImportAllowlistFixture(t)
 	cfg := externalTypeConfig()
-	cfg.Analysis.ForbiddenImports = []ForbiddenImportConfig{{
-		Name:    "app-infra",
-		From:    Selector{Layer: "app"},
-		Package: "example.com/infra",
-		Reason:  "app packages must not import infrastructure packages",
+	cfg.Analysis.ExternalImports = []ExternalImportConfig{{
+		Name: "app-external-imports",
+		From: Selector{Layer: "app"},
+		Allow: ExternalImportAllowConfig{Packages: []string{
+			"example.com/logging",
+		}},
 	}}
 	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
 	if err != nil {
@@ -278,9 +279,9 @@ func TestCheckProfilesFindsForbiddenImports(t *testing.T) {
 		t.Fatalf("CheckLoadedPackages() error = %v", err)
 	}
 
-	violation, ok := violationByRule(violations, ruleForbiddenImport)
+	violation, ok := violationByRule(violations, ruleExternalImportNotAllowed)
 	if !ok {
-		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleForbiddenImport, violations)
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleExternalImportNotAllowed, violations)
 	}
 	if violation.From != "internal/creator/app" || violation.To != "example.com/infra" {
 		t.Fatalf("violation = %+v; want creator app importing example.com/infra", violation)
@@ -321,7 +322,7 @@ func Build() sdk.External { return sdk.External{} }
 	return dir
 }
 
-func writeForbiddenImportFixture(t *testing.T) string {
+func writeExternalImportAllowlistFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	writeTestFile(t, dir, "go.mod", `module example.com/app
@@ -329,16 +330,26 @@ func writeForbiddenImportFixture(t *testing.T) string {
 go 1.23
 
 require example.com/infra v0.0.0
+require example.com/logging v0.0.0
 
 replace example.com/infra => ./infra
+replace example.com/logging => ./logging
 `)
 	writeTestFile(t, dir, "infra/go.mod", "module example.com/infra\n\ngo 1.23\n")
 	writeTestFile(t, dir, "infra/infra.go", "package infra\n\nfunc Use() {}\n")
+	writeTestFile(t, dir, "logging/go.mod", "module example.com/logging\n\ngo 1.23\n")
+	writeTestFile(t, dir, "logging/logging.go", "package logging\n\nfunc Use() {}\n")
 	writeTestFile(t, dir, "internal/creator/app/app.go", `package app
 
-import "example.com/infra"
+import (
+	"example.com/infra"
+	"example.com/logging"
+)
 
-func Run() { infra.Use() }
+func Run() {
+	infra.Use()
+	logging.Use()
+}
 `)
 	return dir
 }

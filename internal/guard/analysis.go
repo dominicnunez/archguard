@@ -27,7 +27,7 @@ const (
 	ruleCompositionSetterCall    = "composition-root-setter-call"
 	ruleCompositionDomainConvert = "composition-root-domain-conversion"
 	ruleSQLCrossModuleTable      = "sql-cross-module-table"
-	ruleForbiddenImport          = "forbidden-import"
+	ruleExternalImportNotAllowed = "external-import-not-allowed"
 	portsLayerName               = "ports"
 	adaptersLayerName            = "adapters"
 	maxPortsInterfacesPerFile    = 8
@@ -66,7 +66,7 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 	for _, profile := range enabledAnalysisProfiles(cfg) {
 		switch profile {
 		case profileModularMonolith:
-			violations = append(violations, checkForbiddenImports(cfg, pkgs)...)
+			violations = append(violations, checkExternalImportAllowlist(cfg, pkgs)...)
 			violations = append(violations, checkExportedAPIExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkAppInterfaceExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkProtocolDTOsInPorts(cfg, pkgs)...)
@@ -84,8 +84,8 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 	return violations, nil
 }
 
-func checkForbiddenImports(cfg Config, pkgs []LoadedPackage) []Violation {
-	if len(cfg.Analysis.ForbiddenImports) == 0 {
+func checkExternalImportAllowlist(cfg Config, pkgs []LoadedPackage) []Violation {
+	if len(cfg.Analysis.ExternalImports) == 0 {
 		return nil
 	}
 	var violations []Violation
@@ -95,32 +95,41 @@ func checkForbiddenImports(cfg Config, pkgs []LoadedPackage) []Violation {
 			continue
 		}
 		for importPath := range pkg.Imports {
-			for _, forbidden := range cfg.Analysis.ForbiddenImports {
-				if !selectorMatches(forbidden.From, from) || !forbiddenImportMatches(forbidden, importPath) {
-					continue
-				}
-				message := "import is forbidden by analysis policy"
-				if forbidden.Reason != "" {
-					message = forbidden.Reason
-				}
-				violations = append(violations, Violation{
-					Rule:    ruleForbiddenImport,
-					From:    from.RelPath,
-					To:      importPath,
-					Message: message,
-				})
+			selected, allowed := externalImportAllowed(cfg, from, importPath)
+			if !selected || allowed || !isExternalPackage(cfg.Packages.Root, importPath) {
+				continue
 			}
+			violations = append(violations, Violation{
+				Rule:    ruleExternalImportNotAllowed,
+				From:    from.RelPath,
+				To:      importPath,
+				Message: "external import is not allowed by analysis policy",
+			})
 		}
 	}
 	sortViolations(violations)
 	return violations
 }
 
-func forbiddenImportMatches(forbidden ForbiddenImportConfig, importPath string) bool {
-	if forbidden.Package != "" && wildcardMatch(forbidden.Package, importPath) {
+func externalImportAllowed(cfg Config, from packageInfo, importPath string) (bool, bool) {
+	selected := false
+	for _, allowlist := range cfg.Analysis.ExternalImports {
+		if !selectorMatches(allowlist.From, from) {
+			continue
+		}
+		selected = true
+		if externalImportMatches(allowlist.Allow, importPath) {
+			return true, true
+		}
+	}
+	return selected, false
+}
+
+func externalImportMatches(allow ExternalImportAllowConfig, importPath string) bool {
+	if allow.Package != "" && wildcardMatch(allow.Package, importPath) {
 		return true
 	}
-	return len(forbidden.Packages) > 0 && matchesAny(forbidden.Packages, importPath)
+	return len(allow.Packages) > 0 && matchesAny(allow.Packages, importPath)
 }
 
 func checkAppInterfaceExternalTypes(cfg Config, pkgs []LoadedPackage) []Violation {
