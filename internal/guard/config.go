@@ -72,14 +72,16 @@ type IgnoreConfig struct {
 }
 
 type AnalysisConfig struct {
-	IncludeTests         bool                        `json:"include_tests" yaml:"include_tests"`
-	Profiles             []string                    `json:"profiles" yaml:"profiles"`
-	TableOwners          []TableOwnerConfig          `json:"table_owners" yaml:"table_owners"`
-	ExternalImports      []ExternalImportConfig      `json:"external_imports" yaml:"external_imports"`
-	ProtocolBoundaries   []ProtocolBoundaryConfig    `json:"protocol_boundaries" yaml:"protocol_boundaries"`
-	ProtocolTags         []ProtocolTagConfig         `json:"protocol_tags" yaml:"protocol_tags"`
-	DependencyInjections []DependencyInjectionConfig `json:"dependency_injections" yaml:"dependency_injections"`
-	ForbiddenTerms       []ForbiddenTermConfig       `json:"forbidden_terms" yaml:"forbidden_terms"`
+	IncludeTests           bool                          `json:"include_tests" yaml:"include_tests"`
+	Profiles               []string                      `json:"profiles" yaml:"profiles"`
+	TableOwners            []TableOwnerConfig            `json:"table_owners" yaml:"table_owners"`
+	ExternalImports        []ExternalImportConfig        `json:"external_imports" yaml:"external_imports"`
+	ForbiddenImports       []ForbiddenImportConfig       `json:"forbidden_imports" yaml:"forbidden_imports"`
+	ForbiddenExternalTypes []ForbiddenExternalTypeConfig `json:"forbidden_external_types" yaml:"forbidden_external_types"`
+	ProtocolBoundaries     []ProtocolBoundaryConfig      `json:"protocol_boundaries" yaml:"protocol_boundaries"`
+	ProtocolTags           []ProtocolTagConfig           `json:"protocol_tags" yaml:"protocol_tags"`
+	DependencyInjections   []DependencyInjectionConfig   `json:"dependency_injections" yaml:"dependency_injections"`
+	ForbiddenTerms         []ForbiddenTermConfig         `json:"forbidden_terms" yaml:"forbidden_terms"`
 }
 
 type TableOwnerConfig struct {
@@ -95,6 +97,19 @@ type ExternalImportConfig struct {
 }
 
 type ExternalImportAllowConfig struct {
+	Package  string   `json:"package" yaml:"package"`
+	Packages []string `json:"packages" yaml:"packages"`
+}
+
+type ForbiddenImportConfig struct {
+	Name     string         `json:"name" yaml:"name"`
+	From     Selector       `json:"from" yaml:"from"`
+	Disallow TargetSelector `json:"disallow" yaml:"disallow"`
+}
+
+type ForbiddenExternalTypeConfig struct {
+	Name     string   `json:"name" yaml:"name"`
+	From     Selector `json:"from" yaml:"from"`
 	Package  string   `json:"package" yaml:"package"`
 	Packages []string `json:"packages" yaml:"packages"`
 }
@@ -199,6 +214,28 @@ func (c Config) Validate() error {
 		}
 		if !selectorConfigured(external.From) {
 			return fmt.Errorf("config analysis.external_imports[%d].from is required", i)
+		}
+	}
+	for i, forbidden := range c.Analysis.ForbiddenImports {
+		if forbidden.Name == "" {
+			return fmt.Errorf("config analysis.forbidden_imports[%d].name is required", i)
+		}
+		if !selectorConfigured(forbidden.From) {
+			return fmt.Errorf("config analysis.forbidden_imports[%d].from is required", i)
+		}
+		if !targetSelectorConfigured(forbidden.Disallow) {
+			return fmt.Errorf("config analysis.forbidden_imports[%d].disallow is required", i)
+		}
+	}
+	for i, forbidden := range c.Analysis.ForbiddenExternalTypes {
+		if forbidden.Name == "" {
+			return fmt.Errorf("config analysis.forbidden_external_types[%d].name is required", i)
+		}
+		if !selectorConfigured(forbidden.From) {
+			return fmt.Errorf("config analysis.forbidden_external_types[%d].from is required", i)
+		}
+		if forbidden.Package == "" && len(forbidden.Packages) == 0 {
+			return fmt.Errorf("config analysis.forbidden_external_types[%d].package or packages is required", i)
 		}
 	}
 	for i, boundary := range c.Analysis.ProtocolBoundaries {

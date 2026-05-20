@@ -29,6 +29,8 @@ const (
 	ruleCompositionDomainConvert = "composition-root-domain-conversion"
 	ruleSQLCrossModuleTable      = "sql-cross-module-table"
 	ruleExternalImportNotAllowed = "external-import-not-allowed"
+	ruleForbiddenImport          = "forbidden-import"
+	ruleForbiddenExternalType    = "forbidden-external-api-type"
 	rulePortsImportAdapter       = "ports-imports-adapter"
 	ruleProtocolResponseType     = "protocol-response-internal-type"
 	ruleProtocolRequestType      = "protocol-request-internal-type"
@@ -84,8 +86,10 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 	for _, profile := range enabledAnalysisProfiles(cfg) {
 		switch profile {
 		case profileModularMonolith:
+			violations = append(violations, checkForbiddenImports(cfg, pkgs)...)
 			violations = append(violations, checkExternalImportAllowlist(cfg, pkgs)...)
 			violations = append(violations, checkPortsAdapterImports(cfg, pkgs)...)
+			violations = append(violations, checkForbiddenExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkProtocolBoundaries(cfg, pkgs)...)
 			violations = append(violations, checkConfiguredProtocolTags(cfg, pkgs)...)
 			violations = append(violations, checkProtocolTagsInDomain(cfg, pkgs)...)
@@ -106,6 +110,38 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 	sortViolations(violations)
 	violations = dedupeViolations(violations)
 	return violations, nil
+}
+
+func checkForbiddenImports(cfg Config, pkgs []LoadedPackage) []Violation {
+	if len(cfg.Analysis.ForbiddenImports) == 0 {
+		return nil
+	}
+	var violations []Violation
+	for _, pkg := range pkgs {
+		from := classifyLoadedPackage(cfg, pkg)
+		if ignored(cfg, from) {
+			continue
+		}
+		for _, rule := range cfg.Analysis.ForbiddenImports {
+			if !selectorMatches(rule.From, from) {
+				continue
+			}
+			for importPath := range pkg.Imports {
+				to := classifyPackage(cfg, importPath)
+				if !targetMatches(rule.Disallow, from, to) {
+					continue
+				}
+				violations = append(violations, Violation{
+					Rule:    ruleForbiddenImport,
+					From:    from.RelPath,
+					To:      to.RelPath,
+					Message: fmt.Sprintf("import is forbidden by analysis policy %q", rule.Name),
+				})
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
 }
 
 func checkExternalImportAllowlist(cfg Config, pkgs []LoadedPackage) []Violation {
@@ -174,6 +210,31 @@ func checkPortsAdapterImports(cfg Config, pkgs []LoadedPackage) []Violation {
 				To:      to.RelPath,
 				Message: "ports packages must not import adapter implementations",
 			})
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkForbiddenExternalTypes(cfg Config, pkgs []LoadedPackage) []Violation {
+	if len(cfg.Analysis.ForbiddenExternalTypes) == 0 {
+		return nil
+	}
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if ignored(cfg, info) || pkg.Types == nil || pkg.TypesInfo == nil {
+			continue
+		}
+		for _, rule := range cfg.Analysis.ForbiddenExternalTypes {
+			if !selectorMatches(rule.From, info) {
+				continue
+			}
+			for _, file := range pkg.Syntax {
+				for _, decl := range file.Decls {
+					violations = append(violations, forbiddenExternalTypeDeclViolations(cfg, pkg, rule, decl)...)
+				}
+			}
 		}
 	}
 	sortViolations(violations)
@@ -568,6 +629,10 @@ func compositionRootFileViolations(cfg Config, pkg LoadedPackage, info packageIn
 				if violation, ok := compositionDomainConversionViolation(cfg, pkg, info, n); ok {
 					violations = append(violations, violation)
 				}
+			case *ast.CompositeLit:
+				if violation, ok := compositionDomainCompositeViolation(cfg, pkg, info, n); ok {
+					violations = append(violations, violation)
+				}
 			}
 			return true
 		})
@@ -633,6 +698,23 @@ func compositionDomainConversionViolation(cfg Config, pkg LoadedPackage, info pa
 		From:    positionString(pkg, call.Fun.Pos()),
 		To:      target.RelPath + "." + typeName.Name(),
 		Message: "composition root converts values into a domain type owned by another module",
+	}, true
+}
+
+func compositionDomainCompositeViolation(cfg Config, pkg LoadedPackage, info packageInfo, lit *ast.CompositeLit) (Violation, bool) {
+	typeName := typeExprName(pkg, lit.Type)
+	if typeName == nil || typeName.Pkg() == nil {
+		return Violation{}, false
+	}
+	target := classifyPackage(cfg, typeName.Pkg().Path())
+	if !target.Internal || target.Layer != "domain" || target.Module == "" || target.Module == info.Module {
+		return Violation{}, false
+	}
+	return Violation{
+		Rule:    ruleCompositionDomainConvert,
+		From:    positionString(pkg, lit.Pos()),
+		To:      target.RelPath + "." + typeName.Name(),
+		Message: "composition root constructs a domain type owned by another module",
 	}, true
 }
 
@@ -760,6 +842,62 @@ func exportedDeclExternalTypeViolations(cfg Config, pkg LoadedPackage, decl ast.
 	default:
 		return nil
 	}
+}
+
+func forbiddenExternalTypeDeclViolations(cfg Config, pkg LoadedPackage, rule ForbiddenExternalTypeConfig, decl ast.Decl) []Violation {
+	switch d := decl.(type) {
+	case *ast.FuncDecl:
+		if d.Name == nil || !ast.IsExported(d.Name.Name) {
+			return nil
+		}
+		return forbiddenExternalTypeViolationsForObject(cfg, pkg, rule, d.Name, d.Name.Name)
+	case *ast.GenDecl:
+		var violations []Violation
+		for _, spec := range d.Specs {
+			s, ok := spec.(*ast.TypeSpec)
+			if !ok || s.Name == nil || !ast.IsExported(s.Name.Name) {
+				continue
+			}
+			violations = append(violations, forbiddenExternalTypeViolationsForObject(cfg, pkg, rule, s.Name, s.Name.Name)...)
+		}
+		return violations
+	default:
+		return nil
+	}
+}
+
+func forbiddenExternalTypeViolationsForObject(cfg Config, pkg LoadedPackage, rule ForbiddenExternalTypeConfig, ident *ast.Ident, name string) []Violation {
+	obj := pkg.TypesInfo.Defs[ident]
+	if obj == nil {
+		return nil
+	}
+	refs := filteredExternalTypeRefs(externalTypeRefs(obj.Type(), pkg.Types, cfg.Packages.Root), rule)
+	if len(refs) == 0 {
+		return nil
+	}
+	return []Violation{{
+		Rule:    ruleForbiddenExternalType,
+		From:    positionString(pkg, ident.Pos()),
+		To:      externalTypeRefsString(refs),
+		Message: fmt.Sprintf("exported API %q references forbidden external type(s) by analysis policy %q", name, rule.Name),
+	}}
+}
+
+func filteredExternalTypeRefs(refs []externalTypeRef, rule ForbiddenExternalTypeConfig) []externalTypeRef {
+	var filtered []externalTypeRef
+	for _, ref := range refs {
+		if forbiddenExternalTypeMatches(rule, ref.PackagePath) {
+			filtered = append(filtered, ref)
+		}
+	}
+	return filtered
+}
+
+func forbiddenExternalTypeMatches(rule ForbiddenExternalTypeConfig, packagePath string) bool {
+	if rule.Package != "" && wildcardMatch(rule.Package, packagePath) {
+		return true
+	}
+	return len(rule.Packages) > 0 && matchesAny(rule.Packages, packagePath)
 }
 
 func exportedInterfaceExternalTypeViolations(cfg Config, pkg LoadedPackage, decl ast.Decl) []Violation {
@@ -1635,7 +1773,14 @@ func callTypeName(pkg LoadedPackage, call *ast.CallExpr) *types.TypeName {
 	if pkg.TypesInfo == nil {
 		return nil
 	}
-	switch fun := unparen(call.Fun).(type) {
+	return typeExprName(pkg, call.Fun)
+}
+
+func typeExprName(pkg LoadedPackage, expr ast.Expr) *types.TypeName {
+	if pkg.TypesInfo == nil {
+		return nil
+	}
+	switch fun := unparen(expr).(type) {
 	case *ast.SelectorExpr:
 		if fun.Sel == nil {
 			return nil

@@ -449,6 +449,73 @@ func TestCheckProfilesFindsExternalImportsWithEmptyAllowlist(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsForbiddenImports(t *testing.T) {
+	dir := writeForbiddenImportFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.ForbiddenImports = []ForbiddenImportConfig{{
+		Name:     "ports-platform-imports",
+		From:     Selector{Layer: portsLayerName},
+		Disallow: TargetSelector{Path: "internal/platform/**"},
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleForbiddenImport)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleForbiddenImport, violations)
+	}
+	if violation.From != "internal/token/ports" || violation.To != "internal/platform/database" {
+		t.Fatalf("violation = %+v; want token ports importing platform database", violation)
+	}
+}
+
+func TestCheckProfilesFindsForbiddenExternalAPITypes(t *testing.T) {
+	dir := writeForbiddenExternalTypeFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Modules = append(cfg.Modules, ModuleConfig{Name: "market", Path: "internal/market"})
+	cfg.Analysis.ForbiddenExternalTypes = []ForbiddenExternalTypeConfig{{
+		Name:    "market-app-external-api-types",
+		From:    Selector{Path: "internal/market/app**"},
+		Package: "example.com/sdk",
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, violation := range violations {
+		if violation.Rule != ruleForbiddenExternalType {
+			continue
+		}
+		if violation.To != "example.com/sdk.ExternalID" {
+			t.Fatalf("To = %q; want example.com/sdk.ExternalID", violation.To)
+		}
+		for _, name := range []string{"Request", "NewService", "Load"} {
+			if strings.Contains(violation.Message, "\""+name+"\"") {
+				seen[name] = true
+			}
+		}
+	}
+	for _, name := range []string{"Request", "NewService", "Load"} {
+		if !seen[name] {
+			t.Fatalf("CheckLoadedPackages() missing %s violation for %q: %v", ruleForbiddenExternalType, name, violations)
+		}
+	}
+}
+
 func TestCheckProfilesFindsPortsImportingAdapters(t *testing.T) {
 	dir := writePortsAdapterImportFixture(t)
 	cfg := externalTypeConfig()
@@ -651,6 +718,64 @@ func Run() {
 	infra.Use()
 	logging.Use()
 }
+`)
+	return dir
+}
+
+func writeForbiddenImportFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/platform/database/tx.go", `package database
+
+import "context"
+
+type Tx interface {
+	Commit(context.Context) error
+	Rollback(context.Context) error
+}
+`)
+	writeTestFile(t, dir, "internal/token/ports/ports.go", `package ports
+
+import (
+	"context"
+
+	platformdb "example.com/app/internal/platform/database"
+)
+
+type Store interface {
+	BeginTx(ctx context.Context) (platformdb.Tx, error)
+}
+`)
+	return dir
+}
+
+func writeForbiddenExternalTypeFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", `module example.com/app
+
+go 1.23
+
+require example.com/sdk v0.0.0
+
+replace example.com/sdk => ./sdk
+`)
+	writeTestFile(t, dir, "sdk/go.mod", "module example.com/sdk\n\ngo 1.23\n")
+	writeTestFile(t, dir, "sdk/sdk.go", "package sdk\n\ntype ExternalID string\n")
+	writeTestFile(t, dir, "internal/market/app/service.go", `package app
+
+import "example.com/sdk"
+
+type Request struct {
+	ID sdk.ExternalID
+}
+
+type Service struct{}
+
+func NewService(id sdk.ExternalID) *Service { return &Service{} }
+
+func (s *Service) Load(id sdk.ExternalID) (sdk.ExternalID, error) { return id, nil }
 `)
 	return dir
 }
@@ -1055,7 +1180,7 @@ func writeCompositionRootFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
-	writeTestFile(t, dir, "internal/token/domain/domain.go", "package domain\n\ntype Venue string\n")
+	writeTestFile(t, dir, "internal/token/domain/domain.go", "package domain\n\ntype Venue string\ntype Record struct{ Name string }\n")
 	writeTestFile(t, dir, "internal/token/app/service.go", `package app
 
 type Service struct {
@@ -1084,6 +1209,7 @@ func RegisterRoutes(server *Server) {
 func Build(service *tokenapp.Service, raw string) {
 	service.SetNotifier(struct{}{})
 	_ = tokendomain.Venue(raw)
+	_ = tokendomain.Record{Name: raw}
 }
 `)
 	return dir
