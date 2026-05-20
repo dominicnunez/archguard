@@ -219,6 +219,68 @@ func TestCheckProfilesFindsThinAdapters(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsSingleMethodCrossModuleForwardingAdapter(t *testing.T) {
+	dir := writeSingleMethodCrossModuleForwardingAdapterFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleThinAdapterForwarding)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleThinAdapterForwarding, violations)
+	}
+	if violation.To != "1" {
+		t.Fatalf("forwarding To = %q; want 1", violation.To)
+	}
+}
+
+func TestCheckProfilesFindsPartialCrossModuleForwardingAdapter(t *testing.T) {
+	dir := writePartialCrossModuleForwardingAdapterFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleThinAdapterForwarding)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleThinAdapterForwarding, violations)
+	}
+	if violation.To != "2" {
+		t.Fatalf("forwarding To = %q; want 2", violation.To)
+	}
+}
+
+func TestCheckProfilesAllowsCrossModuleAdapterThatTranslates(t *testing.T) {
+	dir := writeTranslatingCrossModuleAdapterFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	if _, ok := violationByRule(violations, ruleThinAdapterForwarding); ok {
+		t.Fatalf("CheckLoadedPackages() reported %s violation: %v", ruleThinAdapterForwarding, violations)
+	}
+}
+
 func TestCheckProfilesFindsCompositionRootPatterns(t *testing.T) {
 	dir := writeCompositionRootFixture(t)
 	cfg := externalTypeConfig()
@@ -873,6 +935,117 @@ func (s *Source) Count(ctx context.Context, wallet string) (int, error) {
 
 func (s *Source) CountBatch(ctx context.Context, wallets []string) (map[string]int, error) {
 	return s.repo.CountBatch(ctx, wallets)
+}
+`)
+	return dir
+}
+
+func writeSingleMethodCrossModuleForwardingAdapterFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/creator/adapters/token/source.go", `package token
+
+import "context"
+
+type Source struct {
+	repo sourceRepository
+}
+
+type sourceRepository interface {
+	Count(ctx context.Context, wallet string) (int, error)
+}
+
+func (s *Source) Count(ctx context.Context, wallet string) (int, error) {
+	return s.repo.Count(ctx, wallet)
+}
+`)
+	return dir
+}
+
+func writePartialCrossModuleForwardingAdapterFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/creator/adapters/token/source.go", `package token
+
+import "context"
+
+type Token struct {
+	Address string
+}
+
+type Summary struct {
+	Address string
+}
+
+type Source struct {
+	repo sourceRepository
+}
+
+type sourceRepository interface {
+	Count(ctx context.Context, wallet string) (int, error)
+	CountBatch(ctx context.Context, wallets []string) (map[string]int, error)
+	List(ctx context.Context, wallet string) ([]Token, error)
+}
+
+func (s *Source) Count(ctx context.Context, wallet string) (int, error) {
+	return s.repo.Count(ctx, wallet)
+}
+
+func (s *Source) CountBatch(ctx context.Context, wallets []string) (map[string]int, error) {
+	return s.repo.CountBatch(ctx, wallets)
+}
+
+func (s *Source) ListSummaries(ctx context.Context, wallet string) ([]Summary, error) {
+	tokens, err := s.repo.List(ctx, wallet)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]Summary, 0, len(tokens))
+	for _, token := range tokens {
+		summaries = append(summaries, Summary{Address: token.Address})
+	}
+	return summaries, nil
+}
+`)
+	return dir
+}
+
+func writeTranslatingCrossModuleAdapterFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/creator/adapters/token/source.go", `package token
+
+import "context"
+
+type Token struct {
+	Address string
+}
+
+type Summary struct {
+	Address string
+}
+
+type Source struct {
+	repo sourceRepository
+}
+
+type sourceRepository interface {
+	List(ctx context.Context, wallet string) ([]Token, error)
+}
+
+func (s *Source) ListSummaries(ctx context.Context, wallet string) ([]Summary, error) {
+	tokens, err := s.repo.List(ctx, wallet)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]Summary, 0, len(tokens))
+	for _, token := range tokens {
+		summaries = append(summaries, Summary{Address: token.Address})
+	}
+	return summaries, nil
 }
 `)
 	return dir

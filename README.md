@@ -164,7 +164,7 @@ analysis:
 - `modular-monolith` reports exported `ports` structs with protocol field tags such as `json`.
 - `modular-monolith` reports exported `ports` structs that expose primitive numeric time fields such as integer timestamps.
 - `modular-monolith` reports broad `ports` files and non-persistence interfaces with large method surfaces. Persistence-shaped ports ending in `Repository` or `DataSource` are excluded from this broad-surface heuristic.
-- `modular-monolith` reports thin adapters that embed foreign ports or only forward calls.
+- `modular-monolith` reports thin adapters that embed foreign ports or only forward calls, including cross-module local-interface wrappers.
 - `modular-monolith` reports composition-root mutation, Set-style wiring, domain conversions, and SQL table references from non-owning DB-access packages.
 
 Path patterns support `*`, `?`, and `**`.

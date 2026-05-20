@@ -482,7 +482,7 @@ func checkThinAdapters(cfg Config, pkgs []LoadedPackage) []Violation {
 		for _, file := range pkg.Syntax {
 			violations = append(violations, adapterEmbeddedForeignPortViolations(cfg, pkg, info, file)...)
 		}
-		violations = append(violations, thinAdapterForwardingViolations(pkg, adapterForeignPortBackedFields(cfg, pkg, info))...)
+		violations = append(violations, thinAdapterForwardingViolations(pkg, adapterForwardingEligibleFields(cfg, pkg, info))...)
 	}
 	sortViolations(violations)
 	return violations
@@ -1013,7 +1013,64 @@ func adapterForeignPortBackedFields(cfg Config, pkg LoadedPackage, adapterInfo p
 	if len(interfaceNames) == 0 {
 		return nil
 	}
+	return structFieldsByLocalTypeNames(pkg, interfaceNames)
+}
 
+func adapterForwardingEligibleFields(cfg Config, pkg LoadedPackage, adapterInfo packageInfo) map[forwardingKey]forwardingEligibility {
+	fields := make(map[forwardingKey]forwardingEligibility)
+	for key := range adapterForeignPortBackedFields(cfg, pkg, adapterInfo) {
+		addForwardingEligibility(fields, key, minThinAdapterForwarders, false)
+	}
+	if adapterProviderModule(cfg, adapterInfo) != "" {
+		for key := range adapterLocalInterfaceFields(pkg) {
+			addForwardingEligibility(fields, key, minThinAdapterForwarders, true)
+		}
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
+}
+
+func addForwardingEligibility(fields map[forwardingKey]forwardingEligibility, key forwardingKey, minCount int, pureReceiver bool) {
+	current, ok := fields[key]
+	if !ok || minCount < current.minCount {
+		current.minCount = minCount
+	}
+	if pureReceiver {
+		current.pureReceiver = true
+	}
+	fields[key] = current
+}
+
+func adapterLocalInterfaceFields(pkg LoadedPackage) map[forwardingKey]struct{} {
+	interfaceNames := make(map[string]struct{})
+	for _, file := range pkg.Syntax {
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || typeSpec.Name == nil {
+					continue
+				}
+				interfaceType, ok := typeSpec.Type.(*ast.InterfaceType)
+				if !ok || interfaceType.Methods == nil || len(interfaceType.Methods.List) == 0 {
+					continue
+				}
+				interfaceNames[typeSpec.Name.Name] = struct{}{}
+			}
+		}
+	}
+	if len(interfaceNames) == 0 {
+		return nil
+	}
+	return structFieldsByLocalTypeNames(pkg, interfaceNames)
+}
+
+func structFieldsByLocalTypeNames(pkg LoadedPackage, typeNames map[string]struct{}) map[forwardingKey]struct{} {
 	fields := make(map[forwardingKey]struct{})
 	for _, file := range pkg.Syntax {
 		for _, decl := range file.Decls {
@@ -1032,7 +1089,7 @@ func adapterForeignPortBackedFields(cfg Config, pkg LoadedPackage, adapterInfo p
 				}
 				for _, field := range structType.Fields.List {
 					fieldType := fieldTypeName(field.Type)
-					if _, ok := interfaceNames[fieldType]; !ok {
+					if _, ok := typeNames[fieldType]; !ok {
 						continue
 					}
 					for _, name := range field.Names {
@@ -1047,9 +1104,55 @@ func adapterForeignPortBackedFields(cfg Config, pkg LoadedPackage, adapterInfo p
 	return fields
 }
 
+func adapterProviderModule(cfg Config, info packageInfo) string {
+	if info.Layer != adaptersLayerName || info.Module == "" {
+		return ""
+	}
+	module := longestMatchingModule(cfg.Modules, info.RelPath)
+	if module == nil || module.Name != info.Module {
+		return ""
+	}
+	modulePath := strings.Trim(module.Path, "/")
+	suffix := strings.TrimPrefix(strings.Trim(info.RelPath, "/"), modulePath)
+	suffix = strings.TrimPrefix(suffix, "/")
+	adapterPath := configuredLayerPath(cfg.Layers, adaptersLayerName)
+	if suffix == adapterPath || !strings.HasPrefix(suffix, adapterPath+"/") {
+		return ""
+	}
+	remainder := strings.TrimPrefix(suffix, adapterPath+"/")
+	provider, _, _ := strings.Cut(remainder, "/")
+	if provider == "" || provider == info.Module || !moduleNameConfigured(cfg.Modules, provider) {
+		return ""
+	}
+	return provider
+}
+
+func configuredLayerPath(layers []LayerConfig, name string) string {
+	for _, layer := range layers {
+		if layer.Name == name {
+			return strings.Trim(layer.Path, "/")
+		}
+	}
+	return name
+}
+
+func moduleNameConfigured(modules []ModuleConfig, name string) bool {
+	for _, module := range modules {
+		if module.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 type forwardingKey struct {
 	receiver string
 	field    string
+}
+
+type forwardingEligibility struct {
+	minCount     int
+	pureReceiver bool
 }
 
 type forwardingGroup struct {
@@ -1057,10 +1160,11 @@ type forwardingGroup struct {
 	count    int
 }
 
-func thinAdapterForwardingViolations(pkg LoadedPackage, eligibleFields map[forwardingKey]struct{}) []Violation {
+func thinAdapterForwardingViolations(pkg LoadedPackage, eligibleFields map[forwardingKey]forwardingEligibility) []Violation {
 	if len(eligibleFields) == 0 {
 		return nil
 	}
+	receiverMethods := receiverMethodCounts(pkg)
 	groups := make(map[forwardingKey]forwardingGroup)
 	for _, file := range pkg.Syntax {
 		for _, decl := range file.Decls {
@@ -1088,17 +1192,40 @@ func thinAdapterForwardingViolations(pkg LoadedPackage, eligibleFields map[forwa
 
 	var violations []Violation
 	for key, group := range groups {
-		if group.count < minThinAdapterForwarders {
+		eligibility := eligibleFields[key]
+		if group.count < eligibility.minCount && (!eligibility.pureReceiver || group.count != receiverMethods[key.receiver]) {
 			continue
+		}
+		methodText := "methods"
+		if group.count == 1 {
+			methodText = "method"
 		}
 		violations = append(violations, Violation{
 			Rule:    ruleThinAdapterForwarding,
 			From:    positionString(pkg, group.position),
 			To:      strconv.Itoa(group.count),
-			Message: fmt.Sprintf("adapter receiver %q directly forwards multiple methods to field %q", key.receiver, key.field),
+			Message: fmt.Sprintf("adapter receiver %q directly forwards %d %s to field %q", key.receiver, group.count, methodText, key.field),
 		})
 	}
 	return violations
+}
+
+func receiverMethodCounts(pkg LoadedPackage) map[string]int {
+	counts := make(map[string]int)
+	for _, file := range pkg.Syntax {
+		for _, decl := range file.Decls {
+			funcDecl, ok := decl.(*ast.FuncDecl)
+			if !ok || funcDecl.Name == nil || funcDecl.Body == nil {
+				continue
+			}
+			receiverType := receiverTypeName(funcDecl)
+			if receiverType == "" {
+				continue
+			}
+			counts[receiverType]++
+		}
+	}
+	return counts
 }
 
 func configuredCallNameMatches(names []string, call *ast.CallExpr) bool {
