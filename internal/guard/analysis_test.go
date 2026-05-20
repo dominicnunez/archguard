@@ -516,6 +516,34 @@ func TestCheckProfilesFindsForbiddenExternalAPITypes(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsForbiddenInternalAPITypes(t *testing.T) {
+	dir := writeForbiddenInternalTypeFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Modules = append(cfg.Modules, ModuleConfig{Name: "market", Path: "internal/market"})
+	cfg.Analysis.ForbiddenInternalTypes = []ForbiddenInternalTypeConfig{{
+		Name:     "app-platform-database-api-types",
+		From:     Selector{Layer: "app"},
+		Disallow: TargetSelector{Path: "internal/platform/database"},
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleForbiddenInternalType)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleForbiddenInternalType, violations)
+	}
+	if violation.To != "internal/platform/database.Tx" {
+		t.Fatalf("To = %q; want internal/platform/database.Tx", violation.To)
+	}
+}
+
 func TestCheckProfilesFindsPortsImportingAdapters(t *testing.T) {
 	dir := writePortsAdapterImportFixture(t)
 	cfg := externalTypeConfig()
@@ -535,6 +563,28 @@ func TestCheckProfilesFindsPortsImportingAdapters(t *testing.T) {
 	}
 	if violation.From != "internal/creator/ports" || violation.To != "internal/creator/adapters/postgres" {
 		t.Fatalf("violation = %+v; want ports importing postgres adapter", violation)
+	}
+}
+
+func TestCheckProfilesFindsThinAdapterFunctionForwarding(t *testing.T) {
+	dir := writeThinAdapterFunctionFixture(t)
+	cfg := externalTypeConfig()
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleThinAdapterFunction)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleThinAdapterFunction, violations)
+	}
+	if violation.To != "internal/token/app.NewInput" {
+		t.Fatalf("To = %q; want internal/token/app.NewInput", violation.To)
 	}
 }
 
@@ -780,6 +830,34 @@ func (s *Service) Load(id sdk.ExternalID) (sdk.ExternalID, error) { return id, n
 	return dir
 }
 
+func writeForbiddenInternalTypeFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/platform/database/tx.go", `package database
+
+import "context"
+
+type Tx interface {
+	Commit(context.Context) error
+	Rollback(context.Context) error
+}
+`)
+	writeTestFile(t, dir, "internal/market/app/service.go", `package app
+
+import (
+	"context"
+
+	platformdb "example.com/app/internal/platform/database"
+)
+
+type Service struct{}
+
+func (s *Service) BeginTx(ctx context.Context) (platformdb.Tx, error) { return nil, nil }
+`)
+	return dir
+}
+
 func writePortsAdapterImportFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -791,6 +869,33 @@ import creatorpostgres "example.com/app/internal/creator/adapters/postgres"
 
 var _ = (*creatorpostgres.Repository)(nil)
 	`)
+	return dir
+}
+
+func writeThinAdapterFunctionFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/token/ports/event.go", "package ports\n\ntype Event struct{}\n")
+	writeTestFile(t, dir, "internal/token/app/input.go", `package app
+
+import tokenports "example.com/app/internal/token/ports"
+
+type Input struct{}
+
+func NewInput(event *tokenports.Event) Input { return Input{} }
+`)
+	writeTestFile(t, dir, "internal/token/adapters/pumpfun/mapper.go", `package pumpfun
+
+import (
+	tokenapp "example.com/app/internal/token/app"
+	tokenports "example.com/app/internal/token/ports"
+)
+
+func NewInput(event *tokenports.Event) tokenapp.Input {
+	return tokenapp.NewInput(event)
+}
+`)
 	return dir
 }
 

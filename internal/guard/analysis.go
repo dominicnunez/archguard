@@ -24,6 +24,7 @@ const (
 	ruleBroadPortsInterface      = "broad-ports-interface"
 	ruleAdapterEmbedsForeignPort = "adapter-embeds-foreign-port"
 	ruleThinAdapterForwarding    = "thin-adapter-forwarding"
+	ruleThinAdapterFunction      = "thin-adapter-function-forwarding"
 	ruleCompositionMutation      = "composition-root-mutation"
 	ruleCompositionSetterCall    = "composition-root-setter-call"
 	ruleCompositionDomainConvert = "composition-root-domain-conversion"
@@ -31,6 +32,7 @@ const (
 	ruleExternalImportNotAllowed = "external-import-not-allowed"
 	ruleForbiddenImport          = "forbidden-import"
 	ruleForbiddenExternalType    = "forbidden-external-api-type"
+	ruleForbiddenInternalType    = "forbidden-internal-api-type"
 	rulePortsImportAdapter       = "ports-imports-adapter"
 	ruleProtocolResponseType     = "protocol-response-internal-type"
 	ruleProtocolRequestType      = "protocol-request-internal-type"
@@ -90,6 +92,7 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 			violations = append(violations, checkExternalImportAllowlist(cfg, pkgs)...)
 			violations = append(violations, checkPortsAdapterImports(cfg, pkgs)...)
 			violations = append(violations, checkForbiddenExternalTypes(cfg, pkgs)...)
+			violations = append(violations, checkForbiddenInternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkProtocolBoundaries(cfg, pkgs)...)
 			violations = append(violations, checkConfiguredProtocolTags(cfg, pkgs)...)
 			violations = append(violations, checkProtocolTagsInDomain(cfg, pkgs)...)
@@ -233,6 +236,31 @@ func checkForbiddenExternalTypes(cfg Config, pkgs []LoadedPackage) []Violation {
 			for _, file := range pkg.Syntax {
 				for _, decl := range file.Decls {
 					violations = append(violations, forbiddenExternalTypeDeclViolations(cfg, pkg, rule, decl)...)
+				}
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkForbiddenInternalTypes(cfg Config, pkgs []LoadedPackage) []Violation {
+	if len(cfg.Analysis.ForbiddenInternalTypes) == 0 {
+		return nil
+	}
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if ignored(cfg, info) || pkg.Types == nil || pkg.TypesInfo == nil {
+			continue
+		}
+		for _, rule := range cfg.Analysis.ForbiddenInternalTypes {
+			if !selectorMatches(rule.From, info) {
+				continue
+			}
+			for _, file := range pkg.Syntax {
+				for _, decl := range file.Decls {
+					violations = append(violations, forbiddenInternalTypeDeclViolations(cfg, pkg, info, rule, decl)...)
 				}
 			}
 		}
@@ -544,6 +572,7 @@ func checkThinAdapters(cfg Config, pkgs []LoadedPackage) []Violation {
 			violations = append(violations, adapterEmbeddedForeignPortViolations(cfg, pkg, info, file)...)
 		}
 		violations = append(violations, thinAdapterForwardingViolations(pkg, adapterForwardingEligibleFields(cfg, pkg, info))...)
+		violations = append(violations, thinAdapterAppFunctionForwardingViolations(cfg, pkg, info)...)
 	}
 	sortViolations(violations)
 	return violations
@@ -898,6 +927,45 @@ func forbiddenExternalTypeMatches(rule ForbiddenExternalTypeConfig, packagePath 
 		return true
 	}
 	return len(rule.Packages) > 0 && matchesAny(rule.Packages, packagePath)
+}
+
+func forbiddenInternalTypeDeclViolations(cfg Config, pkg LoadedPackage, info packageInfo, rule ForbiddenInternalTypeConfig, decl ast.Decl) []Violation {
+	switch d := decl.(type) {
+	case *ast.FuncDecl:
+		if d.Name == nil || !ast.IsExported(d.Name.Name) {
+			return nil
+		}
+		return forbiddenInternalTypeViolationsForObject(cfg, pkg, info, rule, d.Name, d.Name.Name)
+	case *ast.GenDecl:
+		var violations []Violation
+		for _, spec := range d.Specs {
+			s, ok := spec.(*ast.TypeSpec)
+			if !ok || s.Name == nil || !ast.IsExported(s.Name.Name) {
+				continue
+			}
+			violations = append(violations, forbiddenInternalTypeViolationsForObject(cfg, pkg, info, rule, s.Name, s.Name.Name)...)
+		}
+		return violations
+	default:
+		return nil
+	}
+}
+
+func forbiddenInternalTypeViolationsForObject(cfg Config, pkg LoadedPackage, info packageInfo, rule ForbiddenInternalTypeConfig, ident *ast.Ident, name string) []Violation {
+	obj := pkg.TypesInfo.Defs[ident]
+	if obj == nil {
+		return nil
+	}
+	refs := internalTypeRefs(obj.Type(), pkg.Types, cfg, info, rule.Disallow)
+	if len(refs) == 0 {
+		return nil
+	}
+	return []Violation{{
+		Rule:    ruleForbiddenInternalType,
+		From:    positionString(pkg, ident.Pos()),
+		To:      internalTypeRefsString(refs),
+		Message: fmt.Sprintf("exported API %q references forbidden internal type(s) by analysis policy %q", name, rule.Name),
+	}}
 }
 
 func exportedInterfaceExternalTypeViolations(cfg Config, pkg LoadedPackage, decl ast.Decl) []Violation {
@@ -1346,6 +1414,59 @@ func thinAdapterForwardingViolations(pkg LoadedPackage, eligibleFields map[forwa
 		})
 	}
 	return violations
+}
+
+func thinAdapterAppFunctionForwardingViolations(cfg Config, pkg LoadedPackage, info packageInfo) []Violation {
+	if info.Module == "" || pkg.TypesInfo == nil {
+		return nil
+	}
+	var violations []Violation
+	for _, file := range pkg.Syntax {
+		for _, decl := range file.Decls {
+			funcDecl, ok := decl.(*ast.FuncDecl)
+			if !ok || funcDecl.Name == nil || funcDecl.Recv != nil || funcDecl.Body == nil {
+				continue
+			}
+			call := singleReturnCall(funcDecl)
+			if call == nil {
+				continue
+			}
+			selector, ok := unparen(call.Fun).(*ast.SelectorExpr)
+			if !ok || selector.Sel == nil {
+				continue
+			}
+			obj, ok := pkg.TypesInfo.Uses[selector.Sel].(*types.Func)
+			if !ok || obj.Pkg() == nil {
+				continue
+			}
+			target := classifyPackage(cfg, obj.Pkg().Path())
+			if target.Module != info.Module || target.Layer != "app" {
+				continue
+			}
+			violations = append(violations, Violation{
+				Rule:    ruleThinAdapterFunction,
+				From:    positionString(pkg, funcDecl.Name.Pos()),
+				To:      target.RelPath + "." + obj.Name(),
+				Message: fmt.Sprintf("adapter function %q directly forwards to same-module app function", funcDecl.Name.Name),
+			})
+		}
+	}
+	return violations
+}
+
+func singleReturnCall(funcDecl *ast.FuncDecl) *ast.CallExpr {
+	if funcDecl == nil || funcDecl.Body == nil || len(funcDecl.Body.List) != 1 {
+		return nil
+	}
+	ret, ok := funcDecl.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return nil
+	}
+	call, ok := unparen(ret.Results[0]).(*ast.CallExpr)
+	if !ok {
+		return nil
+	}
+	return call
 }
 
 func receiverMethodCounts(pkg LoadedPackage) map[string]int {

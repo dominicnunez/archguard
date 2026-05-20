@@ -78,6 +78,7 @@ type AnalysisConfig struct {
 	ExternalImports        []ExternalImportConfig        `json:"external_imports" yaml:"external_imports"`
 	ForbiddenImports       []ForbiddenImportConfig       `json:"forbidden_imports" yaml:"forbidden_imports"`
 	ForbiddenExternalTypes []ForbiddenExternalTypeConfig `json:"forbidden_external_types" yaml:"forbidden_external_types"`
+	ForbiddenInternalTypes []ForbiddenInternalTypeConfig `json:"forbidden_internal_types" yaml:"forbidden_internal_types"`
 	ProtocolBoundaries     []ProtocolBoundaryConfig      `json:"protocol_boundaries" yaml:"protocol_boundaries"`
 	ProtocolTags           []ProtocolTagConfig           `json:"protocol_tags" yaml:"protocol_tags"`
 	DependencyInjections   []DependencyInjectionConfig   `json:"dependency_injections" yaml:"dependency_injections"`
@@ -112,6 +113,12 @@ type ForbiddenExternalTypeConfig struct {
 	From     Selector `json:"from" yaml:"from"`
 	Package  string   `json:"package" yaml:"package"`
 	Packages []string `json:"packages" yaml:"packages"`
+}
+
+type ForbiddenInternalTypeConfig struct {
+	Name     string         `json:"name" yaml:"name"`
+	From     Selector       `json:"from" yaml:"from"`
+	Disallow TargetSelector `json:"disallow" yaml:"disallow"`
 }
 
 type ProtocolBoundaryConfig struct {
@@ -236,6 +243,17 @@ func (c Config) Validate() error {
 		}
 		if forbidden.Package == "" && len(forbidden.Packages) == 0 {
 			return fmt.Errorf("config analysis.forbidden_external_types[%d].package or packages is required", i)
+		}
+	}
+	for i, forbidden := range c.Analysis.ForbiddenInternalTypes {
+		if forbidden.Name == "" {
+			return fmt.Errorf("config analysis.forbidden_internal_types[%d].name is required", i)
+		}
+		if !selectorConfigured(forbidden.From) {
+			return fmt.Errorf("config analysis.forbidden_internal_types[%d].from is required", i)
+		}
+		if !targetSelectorConfigured(forbidden.Disallow) {
+			return fmt.Errorf("config analysis.forbidden_internal_types[%d].disallow is required", i)
 		}
 	}
 	for i, boundary := range c.Analysis.ProtocolBoundaries {
