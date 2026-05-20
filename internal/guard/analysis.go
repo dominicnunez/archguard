@@ -30,6 +30,12 @@ const (
 	ruleSQLCrossModuleTable      = "sql-cross-module-table"
 	ruleExternalImportNotAllowed = "external-import-not-allowed"
 	rulePortsImportAdapter       = "ports-imports-adapter"
+	ruleProtocolResponseType     = "protocol-response-internal-type"
+	ruleProtocolRequestType      = "protocol-request-internal-type"
+	ruleProtocolDocType          = "protocol-doc-internal-type"
+	ruleConfiguredProtocolTag    = "protocol-tag-in-selected-package"
+	ruleDependencyInjection      = "cross-module-dependency-injection"
+	ruleForbiddenBoundaryTerm    = "forbidden-boundary-term"
 	portsLayerName               = "ports"
 	adaptersLayerName            = "adapters"
 	maxPortsInterfacesPerFile    = 8
@@ -50,6 +56,11 @@ type externalTypeRef struct {
 type sqlTableSeenKey struct {
 	file  string
 	table string
+}
+
+type internalTypeRef struct {
+	Info packageInfo
+	Name string
 }
 
 func AnalysisRequiresSyntax(cfg Config) bool {
@@ -75,6 +86,8 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 		case profileModularMonolith:
 			violations = append(violations, checkExternalImportAllowlist(cfg, pkgs)...)
 			violations = append(violations, checkPortsAdapterImports(cfg, pkgs)...)
+			violations = append(violations, checkProtocolBoundaries(cfg, pkgs)...)
+			violations = append(violations, checkConfiguredProtocolTags(cfg, pkgs)...)
 			violations = append(violations, checkProtocolTagsInDomain(cfg, pkgs)...)
 			violations = append(violations, checkExportedAPIExternalTypes(cfg, pkgs)...)
 			violations = append(violations, checkAppInterfaceExternalTypes(cfg, pkgs)...)
@@ -82,6 +95,8 @@ func CheckProfiles(cfg Config, pkgs []LoadedPackage) ([]Violation, error) {
 			violations = append(violations, checkPrimitiveTimeFieldsInPorts(cfg, pkgs)...)
 			violations = append(violations, checkBroadPortsSurfaces(cfg, pkgs)...)
 			violations = append(violations, checkThinAdapters(cfg, pkgs)...)
+			violations = append(violations, checkDependencyInjections(cfg, pkgs)...)
+			violations = append(violations, checkForbiddenBoundaryTerms(cfg, pkgs)...)
 			violations = append(violations, checkCompositionRootPatterns(cfg, pkgs)...)
 			violations = append(violations, checkSQLTableOwnership(cfg, pkgs)...)
 		default:
@@ -159,6 +174,180 @@ func checkPortsAdapterImports(cfg Config, pkgs []LoadedPackage) []Violation {
 				To:      to.RelPath,
 				Message: "ports packages must not import adapter implementations",
 			})
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkProtocolBoundaries(cfg Config, pkgs []LoadedPackage) []Violation {
+	if len(cfg.Analysis.ProtocolBoundaries) == 0 {
+		return nil
+	}
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if ignored(cfg, info) || pkg.TypesInfo == nil {
+			continue
+		}
+		for _, boundary := range cfg.Analysis.ProtocolBoundaries {
+			if !selectorMatches(boundary.From, info) {
+				continue
+			}
+			for _, file := range pkg.Syntax {
+				violations = append(violations, protocolBoundaryFileViolations(cfg, pkg, info, boundary, file)...)
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func protocolBoundaryFileViolations(cfg Config, pkg LoadedPackage, info packageInfo, boundary ProtocolBoundaryConfig, file *ast.File) []Violation {
+	var violations []Violation
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if configuredCallNameMatches(boundary.ResponseSinks, call) {
+			for _, arg := range call.Args {
+				refs := internalTypeRefsInExpr(cfg, pkg, info, boundary.Disallow, arg)
+				if len(refs) == 0 {
+					continue
+				}
+				violations = append(violations, Violation{
+					Rule:    ruleProtocolResponseType,
+					From:    positionString(pkg, arg.Pos()),
+					To:      internalTypeRefsString(refs),
+					Message: "protocol response serializes an internal type from a disallowed boundary",
+				})
+			}
+		}
+		if configuredCallNameMatches(boundary.RequestDecoders, call) {
+			for _, arg := range call.Args {
+				refs := internalTypeRefsInExpr(cfg, pkg, info, boundary.Disallow, arg)
+				if len(refs) == 0 {
+					continue
+				}
+				violations = append(violations, Violation{
+					Rule:    ruleProtocolRequestType,
+					From:    positionString(pkg, arg.Pos()),
+					To:      internalTypeRefsString(refs),
+					Message: "protocol request decoder writes directly into an internal type from a disallowed boundary",
+				})
+			}
+		}
+		return true
+	})
+	if boundary.Docs {
+		violations = append(violations, protocolDocTypeViolations(cfg, pkg, info, boundary, file)...)
+	}
+	return violations
+}
+
+func checkConfiguredProtocolTags(cfg Config, pkgs []LoadedPackage) []Violation {
+	if len(cfg.Analysis.ProtocolTags) == 0 {
+		return nil
+	}
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if ignored(cfg, info) {
+			continue
+		}
+		for _, tagRule := range cfg.Analysis.ProtocolTags {
+			if !selectorMatches(tagRule.From, info) {
+				continue
+			}
+			for _, file := range pkg.Syntax {
+				for _, decl := range file.Decls {
+					violations = append(violations, configuredProtocolTagViolations(pkg, decl)...)
+				}
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func checkDependencyInjections(cfg Config, pkgs []LoadedPackage) []Violation {
+	if len(cfg.Analysis.DependencyInjections) == 0 {
+		return nil
+	}
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if ignored(cfg, info) || pkg.TypesInfo == nil {
+			continue
+		}
+		for _, injection := range cfg.Analysis.DependencyInjections {
+			if !selectorMatches(injection.From, info) {
+				continue
+			}
+			for _, file := range pkg.Syntax {
+				violations = append(violations, dependencyInjectionFileViolations(cfg, pkg, info, injection, file)...)
+			}
+		}
+	}
+	sortViolations(violations)
+	return violations
+}
+
+func dependencyInjectionFileViolations(cfg Config, pkg LoadedPackage, info packageInfo, injection DependencyInjectionConfig, file *ast.File) []Violation {
+	var violations []Violation
+	ast.Inspect(file, func(node ast.Node) bool {
+		lit, ok := node.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		consumerModule := injection.ConsumerModule
+		if consumerModule == "" {
+			consumerModule = compositeLiteralModule(cfg, pkg, lit)
+		}
+		if consumerModule == "" {
+			return true
+		}
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok || !dependencyInjectionFieldMatches(injection, kv.Key) {
+				continue
+			}
+			refs := internalTypeRefsInExpr(cfg, pkg, info, injection.Disallow, kv.Value)
+			for _, ref := range refs {
+				if ref.Info.Module == "" || ref.Info.Module == consumerModule {
+					continue
+				}
+				violations = append(violations, Violation{
+					Rule:    ruleDependencyInjection,
+					From:    positionString(pkg, kv.Value.Pos()),
+					To:      dependencyInjectionTo(kv.Key, ref),
+					Message: "composition injects a persistence-shaped dependency from another module without an adapter boundary",
+				})
+			}
+		}
+		return true
+	})
+	return violations
+}
+
+func checkForbiddenBoundaryTerms(cfg Config, pkgs []LoadedPackage) []Violation {
+	if len(cfg.Analysis.ForbiddenTerms) == 0 {
+		return nil
+	}
+	var violations []Violation
+	for _, pkg := range pkgs {
+		info := classifyLoadedPackage(cfg, pkg)
+		if ignored(cfg, info) {
+			continue
+		}
+		for _, terms := range cfg.Analysis.ForbiddenTerms {
+			if !selectorMatches(terms.From, info) {
+				continue
+			}
+			for _, file := range pkg.Syntax {
+				violations = append(violations, forbiddenBoundaryTermFileViolations(pkg, terms, file)...)
+			}
 		}
 	}
 	sortViolations(violations)
@@ -652,6 +841,15 @@ func domainProtocolTagViolations(pkg LoadedPackage, decl ast.Decl) []Violation {
 	return violations
 }
 
+func configuredProtocolTagViolations(pkg LoadedPackage, decl ast.Decl) []Violation {
+	violations := protocolDTOTypeViolations(pkg, decl)
+	for i := range violations {
+		violations[i].Rule = ruleConfiguredProtocolTag
+		violations[i].Message = strings.Replace(violations[i].Message, "exported ports struct", "exported struct", 1)
+	}
+	return violations
+}
+
 func primitiveTimeFieldViolations(pkg LoadedPackage, decl ast.Decl) []Violation {
 	genDecl, ok := decl.(*ast.GenDecl)
 	if !ok {
@@ -901,6 +1099,247 @@ func thinAdapterForwardingViolations(pkg LoadedPackage, eligibleFields map[forwa
 		})
 	}
 	return violations
+}
+
+func configuredCallNameMatches(names []string, call *ast.CallExpr) bool {
+	if len(names) == 0 {
+		return false
+	}
+	short, full := callNames(call)
+	for _, name := range names {
+		if name == short || name == full {
+			return true
+		}
+	}
+	return false
+}
+
+func callNames(call *ast.CallExpr) (short, full string) {
+	switch fun := unparen(call.Fun).(type) {
+	case *ast.Ident:
+		return fun.Name, fun.Name
+	case *ast.SelectorExpr:
+		short = fun.Sel.Name
+		if base, ok := unparen(fun.X).(*ast.Ident); ok {
+			full = base.Name + "." + fun.Sel.Name
+		} else {
+			full = short
+		}
+		return short, full
+	default:
+		return "", ""
+	}
+}
+
+func protocolDocTypeViolations(cfg Config, pkg LoadedPackage, info packageInfo, boundary ProtocolBoundaryConfig, file *ast.File) []Violation {
+	aliases := fileImportAliases(file)
+	if len(aliases) == 0 {
+		return nil
+	}
+	var violations []Violation
+	seen := make(map[string]struct{})
+	for _, group := range file.Comments {
+		for _, comment := range group.List {
+			text := strings.TrimSpace(strings.TrimPrefix(comment.Text, "//"))
+			if !strings.Contains(text, "@") {
+				continue
+			}
+			for alias, importPath := range aliases {
+				if !strings.Contains(text, alias+".") {
+					continue
+				}
+				target := classifyPackage(cfg, importPath)
+				if !targetMatches(boundary.Disallow, info, target) {
+					continue
+				}
+				for _, typeName := range commentAliasTypeNames(text, alias) {
+					to := target.RelPath + "." + typeName
+					key := positionString(pkg, comment.Pos()) + ":" + to
+					if _, ok := seen[key]; ok {
+						continue
+					}
+					seen[key] = struct{}{}
+					violations = append(violations, Violation{
+						Rule:    ruleProtocolDocType,
+						From:    positionString(pkg, comment.Pos()),
+						To:      to,
+						Message: "protocol documentation exposes an internal type from a disallowed boundary",
+					})
+				}
+			}
+		}
+	}
+	return violations
+}
+
+func fileImportAliases(file *ast.File) map[string]string {
+	aliases := make(map[string]string)
+	for _, spec := range file.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || path == "" {
+			continue
+		}
+		if spec.Name != nil {
+			if spec.Name.Name == "_" || spec.Name.Name == "." {
+				continue
+			}
+			aliases[spec.Name.Name] = path
+			continue
+		}
+		_, alias, _ := strings.Cut(path[strings.LastIndex(path, "/")+1:], "-")
+		if alias == "" {
+			alias = path[strings.LastIndex(path, "/")+1:]
+		}
+		aliases[alias] = path
+	}
+	return aliases
+}
+
+func commentAliasTypeNames(text, alias string) []string {
+	pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(alias) + `\.([A-Za-z_][A-Za-z0-9_]*)`)
+	matches := pattern.FindAllStringSubmatch(text, -1)
+	names := make([]string, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		if _, ok := seen[match[1]]; ok {
+			continue
+		}
+		seen[match[1]] = struct{}{}
+		names = append(names, match[1])
+	}
+	return names
+}
+
+func compositeLiteralModule(cfg Config, pkg LoadedPackage, lit *ast.CompositeLit) string {
+	if lit.Type == nil || pkg.TypesInfo == nil {
+		return ""
+	}
+	t := pkg.TypesInfo.TypeOf(lit.Type)
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return ""
+	}
+	return classifyPackage(cfg, named.Obj().Pkg().Path()).Module
+}
+
+func dependencyInjectionFieldMatches(injection DependencyInjectionConfig, expr ast.Expr) bool {
+	ident, ok := unparen(expr).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if injection.Field != "" && wildcardMatch(injection.Field, ident.Name) {
+		return true
+	}
+	return len(injection.Fields) > 0 && matchesAny(injection.Fields, ident.Name)
+}
+
+func dependencyInjectionTo(key ast.Expr, ref internalTypeRef) string {
+	field := ""
+	if ident, ok := unparen(key).(*ast.Ident); ok {
+		field = ident.Name + " -> "
+	}
+	return field + internalTypeRefString(ref)
+}
+
+func forbiddenBoundaryTermFileViolations(pkg LoadedPackage, cfg ForbiddenTermConfig, file *ast.File) []Violation {
+	checkIdentifiers, checkStrings, checkComments := forbiddenTermChecks(cfg)
+	importStrings := importStringPositions(file)
+	seen := make(map[string]struct{})
+	var violations []Violation
+	add := func(pos token.Pos, term, text string) {
+		key := positionString(pkg, pos) + ":" + strings.ToLower(term)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		violations = append(violations, Violation{
+			Rule:    ruleForbiddenBoundaryTerm,
+			From:    positionString(pkg, pos),
+			To:      term,
+			Message: fmt.Sprintf("selected boundary contains forbidden term %q in %q", term, trimViolationText(text)),
+		})
+	}
+	if checkIdentifiers || checkStrings {
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.Ident:
+				if !checkIdentifiers {
+					return true
+				}
+				for _, term := range matchingForbiddenTerms(cfg.Terms, n.Name) {
+					add(n.Pos(), term, n.Name)
+				}
+			case *ast.BasicLit:
+				if !checkStrings || n.Kind != token.STRING {
+					return true
+				}
+				if importStrings[n.Pos()] {
+					return true
+				}
+				text, err := strconv.Unquote(n.Value)
+				if err != nil {
+					return true
+				}
+				for _, term := range matchingForbiddenTerms(cfg.Terms, text) {
+					add(n.Pos(), term, text)
+				}
+			}
+			return true
+		})
+	}
+	if checkComments {
+		for _, group := range file.Comments {
+			for _, comment := range group.List {
+				for _, term := range matchingForbiddenTerms(cfg.Terms, comment.Text) {
+					add(comment.Pos(), term, comment.Text)
+				}
+			}
+		}
+	}
+	return violations
+}
+
+func importStringPositions(file *ast.File) map[token.Pos]bool {
+	positions := make(map[token.Pos]bool, len(file.Imports))
+	for _, spec := range file.Imports {
+		if spec.Path != nil {
+			positions[spec.Path.Pos()] = true
+		}
+	}
+	return positions
+}
+
+func forbiddenTermChecks(cfg ForbiddenTermConfig) (identifiers, strings, comments bool) {
+	if !cfg.Identifiers && !cfg.Strings && !cfg.Comments {
+		return true, true, true
+	}
+	return cfg.Identifiers, cfg.Strings, cfg.Comments
+}
+
+func matchingForbiddenTerms(terms []string, text string) []string {
+	lowerText := strings.ToLower(text)
+	var matches []string
+	for _, term := range terms {
+		if term == "" {
+			continue
+		}
+		if strings.Contains(lowerText, strings.ToLower(term)) {
+			matches = append(matches, term)
+		}
+	}
+	return matches
+}
+
+func trimViolationText(text string) string {
+	text = strings.TrimSpace(text)
+	const max = 80
+	if len(text) <= max {
+		return text
+	}
+	return text[:max] + "..."
 }
 
 func interfaceMethodCount(interfaceType *ast.InterfaceType) int {
@@ -1259,6 +1698,144 @@ func isPrimitiveTimeField(pkg LoadedPackage, field *ast.Field) bool {
 
 func isTimeLikeFieldName(name string) bool {
 	return strings.HasSuffix(name, "Timestamp") || strings.HasSuffix(name, "Time") || strings.HasSuffix(name, "At")
+}
+
+func internalTypeRefsInExpr(cfg Config, pkg LoadedPackage, from packageInfo, target TargetSelector, expr ast.Expr) []internalTypeRef {
+	refs := internalTypeRefs(pkg.TypesInfo.TypeOf(expr), pkg.Types, cfg, from, target)
+	switch e := unparen(expr).(type) {
+	case *ast.UnaryExpr:
+		refs = append(refs, internalTypeRefsInExpr(cfg, pkg, from, target, e.X)...)
+	case *ast.CompositeLit:
+		for _, elt := range e.Elts {
+			refs = append(refs, internalTypeRefsInCompositeElement(cfg, pkg, from, target, elt)...)
+		}
+	}
+	return dedupeInternalTypeRefs(refs)
+}
+
+func internalTypeRefsInCompositeElement(cfg Config, pkg LoadedPackage, from packageInfo, target TargetSelector, expr ast.Expr) []internalTypeRef {
+	if kv, ok := unparen(expr).(*ast.KeyValueExpr); ok {
+		return internalTypeRefsInExpr(cfg, pkg, from, target, kv.Value)
+	}
+	return internalTypeRefsInExpr(cfg, pkg, from, target, expr)
+}
+
+func internalTypeRefs(t types.Type, current *types.Package, cfg Config, from packageInfo, target TargetSelector) []internalTypeRef {
+	refs := make(map[string]internalTypeRef)
+	seen := make(map[types.Type]struct{})
+
+	var visit func(types.Type)
+	visit = func(t types.Type) {
+		if t == nil {
+			return
+		}
+		t = types.Unalias(t)
+		if _, ok := seen[t]; ok {
+			return
+		}
+		seen[t] = struct{}{}
+
+		switch tt := t.(type) {
+		case *types.Named:
+			obj := tt.Obj()
+			if obj != nil && obj.Pkg() != nil {
+				info := classifyPackage(cfg, obj.Pkg().Path())
+				if info.Internal && targetMatches(target, from, info) && obj.Pkg() != current {
+					ref := internalTypeRef{Info: info, Name: obj.Name()}
+					refs[internalTypeRefString(ref)] = ref
+					return
+				}
+			}
+			if args := tt.TypeArgs(); args != nil {
+				for i := 0; i < args.Len(); i++ {
+					visit(args.At(i))
+				}
+			}
+			visit(tt.Underlying())
+		case *types.Basic:
+			return
+		case *types.Pointer:
+			visit(tt.Elem())
+		case *types.Slice:
+			visit(tt.Elem())
+		case *types.Array:
+			visit(tt.Elem())
+		case *types.Map:
+			visit(tt.Key())
+			visit(tt.Elem())
+		case *types.Chan:
+			visit(tt.Elem())
+		case *types.Tuple:
+			for i := 0; i < tt.Len(); i++ {
+				visit(tt.At(i).Type())
+			}
+		case *types.Signature:
+			visit(tt.Params())
+			visit(tt.Results())
+		case *types.Struct:
+			for i := 0; i < tt.NumFields(); i++ {
+				visit(tt.Field(i).Type())
+			}
+		case *types.Interface:
+			for i := 0; i < tt.NumExplicitMethods(); i++ {
+				visit(tt.ExplicitMethod(i).Type())
+			}
+			tt.Complete()
+			for i := 0; i < tt.NumEmbeddeds(); i++ {
+				visit(tt.EmbeddedType(i))
+			}
+		case *types.TypeParam:
+			visit(tt.Constraint())
+		case *types.Union:
+			for i := 0; i < tt.Len(); i++ {
+				visit(tt.Term(i).Type())
+			}
+		}
+	}
+
+	visit(t)
+
+	result := make([]internalTypeRef, 0, len(refs))
+	for _, ref := range refs {
+		result = append(result, ref)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return internalTypeRefString(result[i]) < internalTypeRefString(result[j])
+	})
+	return result
+}
+
+func dedupeInternalTypeRefs(refs []internalTypeRef) []internalTypeRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	seen := make(map[string]internalTypeRef, len(refs))
+	for _, ref := range refs {
+		seen[internalTypeRefString(ref)] = ref
+	}
+	result := make([]internalTypeRef, 0, len(seen))
+	for _, ref := range seen {
+		result = append(result, ref)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return internalTypeRefString(result[i]) < internalTypeRefString(result[j])
+	})
+	return result
+}
+
+func internalTypeRefsString(refs []internalTypeRef) string {
+	parts := make([]string, len(refs))
+	for i, ref := range refs {
+		parts[i] = internalTypeRefString(ref)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func internalTypeRefString(ref internalTypeRef) string {
+	if ref.Name == "" {
+		return ref.Info.RelPath
+	}
+	return ref.Info.RelPath + "." + ref.Name
 }
 
 func externalTypeRefs(t types.Type, current *types.Package, root string) []externalTypeRef {

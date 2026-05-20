@@ -72,10 +72,14 @@ type IgnoreConfig struct {
 }
 
 type AnalysisConfig struct {
-	IncludeTests    bool                   `json:"include_tests" yaml:"include_tests"`
-	Profiles        []string               `json:"profiles" yaml:"profiles"`
-	TableOwners     []TableOwnerConfig     `json:"table_owners" yaml:"table_owners"`
-	ExternalImports []ExternalImportConfig `json:"external_imports" yaml:"external_imports"`
+	IncludeTests         bool                        `json:"include_tests" yaml:"include_tests"`
+	Profiles             []string                    `json:"profiles" yaml:"profiles"`
+	TableOwners          []TableOwnerConfig          `json:"table_owners" yaml:"table_owners"`
+	ExternalImports      []ExternalImportConfig      `json:"external_imports" yaml:"external_imports"`
+	ProtocolBoundaries   []ProtocolBoundaryConfig    `json:"protocol_boundaries" yaml:"protocol_boundaries"`
+	ProtocolTags         []ProtocolTagConfig         `json:"protocol_tags" yaml:"protocol_tags"`
+	DependencyInjections []DependencyInjectionConfig `json:"dependency_injections" yaml:"dependency_injections"`
+	ForbiddenTerms       []ForbiddenTermConfig       `json:"forbidden_terms" yaml:"forbidden_terms"`
 }
 
 type TableOwnerConfig struct {
@@ -93,6 +97,38 @@ type ExternalImportConfig struct {
 type ExternalImportAllowConfig struct {
 	Package  string   `json:"package" yaml:"package"`
 	Packages []string `json:"packages" yaml:"packages"`
+}
+
+type ProtocolBoundaryConfig struct {
+	Name            string         `json:"name" yaml:"name"`
+	From            Selector       `json:"from" yaml:"from"`
+	Disallow        TargetSelector `json:"disallow" yaml:"disallow"`
+	ResponseSinks   []string       `json:"response_sinks" yaml:"response_sinks"`
+	RequestDecoders []string       `json:"request_decoders" yaml:"request_decoders"`
+	Docs            bool           `json:"docs" yaml:"docs"`
+}
+
+type ProtocolTagConfig struct {
+	Name string   `json:"name" yaml:"name"`
+	From Selector `json:"from" yaml:"from"`
+}
+
+type DependencyInjectionConfig struct {
+	Name           string         `json:"name" yaml:"name"`
+	From           Selector       `json:"from" yaml:"from"`
+	Field          string         `json:"field" yaml:"field"`
+	Fields         []string       `json:"fields" yaml:"fields"`
+	ConsumerModule string         `json:"consumer_module" yaml:"consumer_module"`
+	Disallow       TargetSelector `json:"disallow" yaml:"disallow"`
+}
+
+type ForbiddenTermConfig struct {
+	Name        string   `json:"name" yaml:"name"`
+	From        Selector `json:"from" yaml:"from"`
+	Terms       []string `json:"terms" yaml:"terms"`
+	Identifiers bool     `json:"identifiers" yaml:"identifiers"`
+	Strings     bool     `json:"strings" yaml:"strings"`
+	Comments    bool     `json:"comments" yaml:"comments"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -163,6 +199,53 @@ func (c Config) Validate() error {
 		}
 		if !selectorConfigured(external.From) {
 			return fmt.Errorf("config analysis.external_imports[%d].from is required", i)
+		}
+	}
+	for i, boundary := range c.Analysis.ProtocolBoundaries {
+		if boundary.Name == "" {
+			return fmt.Errorf("config analysis.protocol_boundaries[%d].name is required", i)
+		}
+		if !selectorConfigured(boundary.From) {
+			return fmt.Errorf("config analysis.protocol_boundaries[%d].from is required", i)
+		}
+		if !targetSelectorConfigured(boundary.Disallow) {
+			return fmt.Errorf("config analysis.protocol_boundaries[%d].disallow is required", i)
+		}
+		if len(boundary.ResponseSinks) == 0 && len(boundary.RequestDecoders) == 0 && !boundary.Docs {
+			return fmt.Errorf("config analysis.protocol_boundaries[%d] must configure response_sinks, request_decoders, or docs", i)
+		}
+	}
+	for i, tag := range c.Analysis.ProtocolTags {
+		if tag.Name == "" {
+			return fmt.Errorf("config analysis.protocol_tags[%d].name is required", i)
+		}
+		if !selectorConfigured(tag.From) {
+			return fmt.Errorf("config analysis.protocol_tags[%d].from is required", i)
+		}
+	}
+	for i, injection := range c.Analysis.DependencyInjections {
+		if injection.Name == "" {
+			return fmt.Errorf("config analysis.dependency_injections[%d].name is required", i)
+		}
+		if !selectorConfigured(injection.From) {
+			return fmt.Errorf("config analysis.dependency_injections[%d].from is required", i)
+		}
+		if injection.Field == "" && len(injection.Fields) == 0 {
+			return fmt.Errorf("config analysis.dependency_injections[%d].field or fields is required", i)
+		}
+		if !targetSelectorConfigured(injection.Disallow) {
+			return fmt.Errorf("config analysis.dependency_injections[%d].disallow is required", i)
+		}
+	}
+	for i, terms := range c.Analysis.ForbiddenTerms {
+		if terms.Name == "" {
+			return fmt.Errorf("config analysis.forbidden_terms[%d].name is required", i)
+		}
+		if !selectorConfigured(terms.From) {
+			return fmt.Errorf("config analysis.forbidden_terms[%d].from is required", i)
+		}
+		if len(terms.Terms) == 0 {
+			return fmt.Errorf("config analysis.forbidden_terms[%d].terms is required", i)
 		}
 	}
 	return nil

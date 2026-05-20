@@ -109,6 +109,32 @@ analysis:
         packages:
           - go.uber.org/zap
           - github.com/google/uuid
+  protocol_boundaries:
+    - name: api-domain-responses
+      from:
+        path: internal/api/handlers
+      disallow:
+        layer: domain
+      response_sinks: [JSON, respondWithList]
+      request_decoders: [ShouldBindJSON]
+      docs: true
+  protocol_tags:
+    - name: runtime-json-tags
+      from:
+        path: internal/workers
+  dependency_injections:
+    - name: orders-foreign-store-injection
+      from:
+        path: internal/bootstrap**
+      field: WalletStore
+      consumer_module: orders
+      disallow:
+        module: accounts
+  forbidden_terms:
+    - name: vendor-terms-in-ports
+      from:
+        layer: ports
+      terms: [stripe, github]
 ```
 
 ## Rule Model
@@ -126,8 +152,13 @@ analysis:
 - `analysis.profiles` enables reusable built-in checks such as `modular-monolith`.
 - `analysis.table_owners` maps table names or wildcard patterns to owning modules for SQL ownership checks when table names do not follow module-name conventions.
 - `analysis.external_imports` defines an allowlist for external imports from selected packages; matching packages reject external imports not listed in `allow`, and omitted `allow` means no external imports are allowed.
+- `analysis.protocol_boundaries` defines transport sink/decoder/doc checks that reject configured internal types at protocol boundaries.
+- `analysis.protocol_tags` reports protocol field tags in selected packages outside transport-owned DTOs.
+- `analysis.dependency_injections` reports configured composition-root field injections that pass dependencies from disallowed modules into another module's dependency struct.
+- `analysis.forbidden_terms` reports configured vendor/protocol terms in selected packages; when `identifiers`, `strings`, and `comments` are all omitted, all three are checked.
 - `modular-monolith` reports exported `ports` APIs that reference non-stdlib external dependency types.
 - `modular-monolith` reports `ports` packages that import adapter implementations.
+- `modular-monolith` applies configured protocol boundary, protocol tag, dependency injection, and forbidden term checks.
 - `modular-monolith` reports exported `domain` structs with protocol field tags such as `json`.
 - `modular-monolith` reports exported `app` interfaces that expose non-stdlib external dependency types.
 - `modular-monolith` reports exported `ports` structs with protocol field tags such as `json`.

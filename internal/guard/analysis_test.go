@@ -409,6 +409,124 @@ func TestCheckProfilesFindsPortsImportingAdapters(t *testing.T) {
 	}
 }
 
+func TestCheckProfilesFindsProtocolBoundaryInternalTypes(t *testing.T) {
+	dir := writeProtocolBoundaryFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.ProtocolBoundaries = []ProtocolBoundaryConfig{{
+		Name:            "api-domain-protocol",
+		From:            Selector{Path: "internal/api**"},
+		Disallow:        TargetSelector{Layer: "domain"},
+		ResponseSinks:   []string{"JSON", "respondWithList"},
+		RequestDecoders: []string{"decodeJSONStrict"},
+		Docs:            true,
+	}, {
+		Name:            "api-config-protocol",
+		From:            Selector{Path: "internal/api**"},
+		Disallow:        TargetSelector{Path: "internal/config"},
+		ResponseSinks:   []string{"JSON", "respondWithList"},
+		RequestDecoders: []string{"decodeJSONStrict"},
+		Docs:            true,
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	for _, rule := range []string{ruleProtocolResponseType, ruleProtocolRequestType, ruleProtocolDocType} {
+		if _, ok := violationByRule(violations, rule); !ok {
+			t.Fatalf("CheckLoadedPackages() missing %s violation: %v", rule, violations)
+		}
+	}
+}
+
+func TestCheckProfilesFindsConfiguredProtocolTags(t *testing.T) {
+	dir := writeConfiguredProtocolTagFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.ProtocolTags = []ProtocolTagConfig{{
+		Name: "runtime-json-tags",
+		From: Selector{Path: "internal/config"},
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleConfiguredProtocolTag)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleConfiguredProtocolTag, violations)
+	}
+	if !strings.Contains(violation.From, "internal/config/config.go") {
+		t.Fatalf("From = %q; want config file", violation.From)
+	}
+}
+
+func TestCheckProfilesFindsCrossModuleDependencyInjection(t *testing.T) {
+	dir := writeDependencyInjectionFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Modules = append(cfg.Modules, ModuleConfig{Name: "market", Path: "internal/market"})
+	cfg.Analysis.DependencyInjections = []DependencyInjectionConfig{{
+		Name:           "creator-market-injection",
+		From:           Selector{Path: "internal/bootstrap"},
+		Field:          "WalletRepo",
+		ConsumerModule: "creator",
+		Disallow:       TargetSelector{Module: "market"},
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleDependencyInjection)
+	if !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleDependencyInjection, violations)
+	}
+	if violation.To != "WalletRepo -> internal/market/adapters/postgres.WalletRepository" {
+		t.Fatalf("To = %q; want market wallet repository injection", violation.To)
+	}
+}
+
+func TestCheckProfilesFindsForbiddenBoundaryTerms(t *testing.T) {
+	dir := writeForbiddenBoundaryTermFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.ForbiddenTerms = []ForbiddenTermConfig{{
+		Name:  "vendor terms in ports",
+		From:  Selector{Path: "internal/token/ports"},
+		Terms: []string{"pump", "v3coin"},
+	}, {
+		Name:  "vendor terms in domain",
+		From:  Selector{Path: "internal/token/domain"},
+		Terms: []string{"dexscreener"},
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckLoadedPackages(cfg, pkgs)
+	if err != nil {
+		t.Fatalf("CheckLoadedPackages() error = %v", err)
+	}
+
+	if _, ok := violationByRule(violations, ruleForbiddenBoundaryTerm); !ok {
+		t.Fatalf("CheckLoadedPackages() missing %s violation: %v", ruleForbiddenBoundaryTerm, violations)
+	}
+}
+
 func writeExternalTypeFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -485,6 +603,127 @@ func writePortsAdapterImportFixture(t *testing.T) string {
 import creatorpostgres "example.com/app/internal/creator/adapters/postgres"
 
 var _ = (*creatorpostgres.Repository)(nil)
+	`)
+	return dir
+}
+
+func writeProtocolBoundaryFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/creator/domain/types.go", `package domain
+
+type CreatorStats struct {
+	Wallet string
+}
+`)
+	writeTestFile(t, dir, "internal/config/config.go", `package config
+
+type ThorConfig struct {
+	Enabled bool `+"`json:\"enabled\"`"+`
+}
+
+func DefaultConfig() *ThorConfig { return &ThorConfig{} }
+`)
+	writeTestFile(t, dir, "internal/api/handlers/handler.go", `package handlers
+
+import (
+	"net/http"
+
+	"example.com/app/internal/config"
+	"example.com/app/internal/creator/domain"
+)
+
+type context struct{}
+
+func (c *context) JSON(int, any) {}
+
+func respondWithList(c *context, key string, data any, total int, meta any) {}
+
+func decodeJSONStrict(c *context, out any) error { return nil }
+
+// Get godoc
+// @Success 200 {object} domain.CreatorStats
+// @Success 200 {object} config.ThorConfig
+func Get(c *context, stats []domain.CreatorStats) {
+	respondWithList(c, "creators", stats, len(stats), nil)
+	cfg := config.DefaultConfig()
+	c.JSON(http.StatusOK, map[string]any{"config": cfg})
+	var updates config.ThorConfig
+	_ = decodeJSONStrict(c, &updates)
+}
+`)
+	return dir
+}
+
+func writeConfiguredProtocolTagFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/config/config.go", `package config
+
+type ThorConfig struct {
+	Enabled bool `+"`json:\"enabled\"`"+`
+}
+`)
+	writeTestFile(t, dir, "internal/api/handlers/dto.go", `package handlers
+
+type Response struct {
+	Enabled bool `+"`json:\"enabled\"`"+`
+}
+`)
+	return dir
+}
+
+func writeDependencyInjectionFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/market/adapters/postgres/wallet.go", `package postgres
+
+type WalletRepository struct{}
+`)
+	writeTestFile(t, dir, "internal/creator/app/service.go", `package app
+
+type CreatorDeps struct {
+	WalletRepo any
+}
+
+type Service struct{}
+
+func NewService(CreatorDeps) *Service { return &Service{} }
+`)
+	writeTestFile(t, dir, "internal/bootstrap/bootstrap.go", `package bootstrap
+
+import (
+	creator "example.com/app/internal/creator/app"
+	marketpostgres "example.com/app/internal/market/adapters/postgres"
+)
+
+func Build() *creator.Service {
+	marketRepo := &marketpostgres.WalletRepository{}
+	return creator.NewService(creator.CreatorDeps{WalletRepo: marketRepo})
+}
+`)
+	return dir
+}
+
+func writeForbiddenBoundaryTermFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/token/ports/ports.go", `package ports
+
+// PumpAPI is a pump.fun-shaped port.
+type PumpAPI interface {
+	GetCoinDetails() (*V3CoinResponse, error)
+}
+
+type V3CoinResponse struct{}
+`)
+	writeTestFile(t, dir, "internal/token/domain/types.go", `package domain
+
+const SourceDexScreener = "dexscreener"
 `)
 	return dir
 }
