@@ -392,6 +392,84 @@ func TestCheckProfilesFindsOwnedTableNameLiteralOutsideOwner(t *testing.T) {
 	}
 }
 
+func TestCheckRepositoryFindsSQLFileMultiOwnerStatement(t *testing.T) {
+	dir := writeSQLFileFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.SQLTableReferences = []SQLTableReferenceConfig{{
+		Name:                  "migration-single-owner-statements",
+		Path:                  "migrations/*.sql",
+		MaxOwnersPerStatement: 1,
+	}}
+	pkgs, err := LoadPackages(dir, []string{"./internal/..."}, LoadOptions{NeedSyntax: true})
+	if err != nil {
+		t.Fatalf("LoadPackages() error = %v", err)
+	}
+
+	violations, err := CheckRepository(cfg, dir, pkgs)
+	if err != nil {
+		t.Fatalf("CheckRepository() error = %v", err)
+	}
+
+	violation, ok := violationByRule(violations, ruleSQLCrossModuleTable)
+	if !ok {
+		t.Fatalf("CheckRepository() missing %s violation: %v", ruleSQLCrossModuleTable, violations)
+	}
+	if violation.To != "creator_stats (creator), tokens (token)" {
+		t.Fatalf("SQL file To = %q; want creator_stats (creator), tokens (token)", violation.To)
+	}
+	if violation.From != "migrations/001_policy.sql:2" {
+		t.Fatalf("SQL file From = %q; want migrations/001_policy.sql:2", violation.From)
+	}
+}
+
+func TestCheckSQLFilesHonorsAllowedOwners(t *testing.T) {
+	dir := writeSQLFileFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.SQLTableReferences = []SQLTableReferenceConfig{{
+		Name:  "token-migrations",
+		Path:  "migrations/002_token_only.sql",
+		Allow: TableOwnerTargetConfig{Module: "token"},
+	}}
+
+	violations, err := CheckSQLFiles(cfg, dir)
+	if err != nil {
+		t.Fatalf("CheckSQLFiles() error = %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("CheckSQLFiles() violations = %v; want none", violations)
+	}
+}
+
+func TestCheckSQLFilesHonorsIgnoredPaths(t *testing.T) {
+	dir := writeSQLFileFixture(t)
+	cfg := externalTypeConfig()
+	cfg.Analysis.SQLTableReferences = []SQLTableReferenceConfig{{
+		Name:                  "future-migrations",
+		Path:                  "migrations/*.sql",
+		IgnorePaths:           []string{"migrations/001_policy.sql"},
+		MaxOwnersPerStatement: 1,
+	}}
+
+	violations, err := CheckSQLFiles(cfg, dir)
+	if err != nil {
+		t.Fatalf("CheckSQLFiles() error = %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("CheckSQLFiles() violations = %v; want ignored historical migration", violations)
+	}
+}
+
+func TestSQLTableExtractionIncludesDDLReferences(t *testing.T) {
+	tables := sqlTables(`
+		CREATE TABLE IF NOT EXISTS token_trade_events (token_address TEXT REFERENCES tokens(address));
+		ALTER TABLE cluster_metadata ADD CONSTRAINT fk_cluster_best_token FOREIGN KEY (best_token_address) REFERENCES tokens(address);
+	`)
+	want := []string{"token_trade_events", "tokens", "cluster_metadata"}
+	if fmt.Sprint(tables) != fmt.Sprint(want) {
+		t.Fatalf("sqlTables() = %v; want %v", tables, want)
+	}
+}
+
 func TestCheckProfilesFindsExternalImportsOutsideAllowlist(t *testing.T) {
 	dir := writeExternalImportAllowlistFixture(t)
 	cfg := externalTypeConfig()
@@ -1373,6 +1451,22 @@ func Truncate(db *sql.DB) {
 }
 
 func TruncateTable(_ string) {}
+`)
+	return dir
+}
+
+func writeSQLFileFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.23\n")
+	writeTestFile(t, dir, "internal/token/app/app.go", "package app\n\nfunc Name() string { return \"token\" }\n")
+	writeTestFile(t, dir, "migrations/001_policy.sql", `CREATE OR REPLACE FUNCTION prune_tokens() RETURNS void AS $$
+	SELECT t.address FROM tokens t JOIN creator_stats cs ON cs.wallet_address = t.creator_wallet;
+$$ LANGUAGE SQL;
+`)
+	writeTestFile(t, dir, "migrations/002_token_only.sql", `CREATE TABLE IF NOT EXISTS token_snapshots (
+	token_address TEXT REFERENCES tokens(address)
+);
 `)
 	return dir
 }

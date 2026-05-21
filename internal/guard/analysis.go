@@ -49,7 +49,7 @@ const (
 
 var (
 	protocolTagKeys = []string{"json", "xml", "yaml", "form", "protobuf"}
-	sqlTablePattern = regexp.MustCompile(`(?i)\b(?:from|join|update|into|truncate(?:\s+table)?)\s+([a-zA-Z_][a-zA-Z0-9_\.]*)`)
+	sqlTablePattern = regexp.MustCompile(`(?i)\b(?:from|join|update|into|references|truncate(?:\s+table)?|alter\s+table(?:\s+if\s+exists)?)\s+([a-zA-Z_][a-zA-Z0-9_\.]*)|\bcreate\s+(?:temp(?:orary)?\s+)?table(?:\s+if\s+not\s+exists)?\s+([a-zA-Z_][a-zA-Z0-9_\.]*)`)
 )
 
 type externalTypeRef struct {
@@ -1919,11 +1919,8 @@ func typeExprName(pkg LoadedPackage, expr ast.Expr) *types.TypeName {
 func sqlTables(sql string) []string {
 	seen := make(map[string]struct{})
 	var tables []string
-	for _, match := range sqlTablePattern.FindAllStringSubmatch(sql, -1) {
-		if len(match) < 2 {
-			continue
-		}
-		table := normalizeSQLTable(match[1])
+	for _, ref := range sqlTableReferences(sql) {
+		table := ref.Table
 		if table == "" {
 			continue
 		}
@@ -1954,7 +1951,7 @@ func looksLikeSQL(text string) bool {
 }
 
 func normalizeSQLTable(table string) string {
-	table = strings.Trim(strings.ToLower(table), `". ,;()\n\t`)
+	table = strings.Trim(strings.ToLower(table), "\". ,;()\n\t")
 	if table == "" {
 		return ""
 	}

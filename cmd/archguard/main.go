@@ -99,7 +99,7 @@ func runCheck(args []string) error {
 	if err != nil {
 		return err
 	}
-	violations, err := guard.CheckLoadedPackages(cfg, pkgs)
+	violations, err := guard.CheckRepository(cfg, repoDir, pkgs)
 	if err != nil {
 		return err
 	}

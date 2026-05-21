@@ -79,6 +79,7 @@ type AnalysisConfig struct {
 	ForbiddenImports       []ForbiddenImportConfig       `json:"forbidden_imports" yaml:"forbidden_imports"`
 	ForbiddenExternalTypes []ForbiddenExternalTypeConfig `json:"forbidden_external_types" yaml:"forbidden_external_types"`
 	ForbiddenInternalTypes []ForbiddenInternalTypeConfig `json:"forbidden_internal_types" yaml:"forbidden_internal_types"`
+	SQLTableReferences     []SQLTableReferenceConfig     `json:"sql_table_references" yaml:"sql_table_references"`
 	ProtocolBoundaries     []ProtocolBoundaryConfig      `json:"protocol_boundaries" yaml:"protocol_boundaries"`
 	ProtocolTags           []ProtocolTagConfig           `json:"protocol_tags" yaml:"protocol_tags"`
 	DependencyInjections   []DependencyInjectionConfig   `json:"dependency_injections" yaml:"dependency_injections"`
@@ -89,6 +90,21 @@ type TableOwnerConfig struct {
 	Module string   `json:"module" yaml:"module"`
 	Table  string   `json:"table" yaml:"table"`
 	Tables []string `json:"tables" yaml:"tables"`
+}
+
+type SQLTableReferenceConfig struct {
+	Name                  string                 `json:"name" yaml:"name"`
+	Path                  string                 `json:"path" yaml:"path"`
+	Paths                 []string               `json:"paths" yaml:"paths"`
+	IgnorePaths           []string               `json:"ignore_paths" yaml:"ignore_paths"`
+	Allow                 TableOwnerTargetConfig `json:"allow" yaml:"allow"`
+	Disallow              TableOwnerTargetConfig `json:"disallow" yaml:"disallow"`
+	MaxOwnersPerStatement int                    `json:"max_owners_per_statement" yaml:"max_owners_per_statement"`
+}
+
+type TableOwnerTargetConfig struct {
+	Module  string   `json:"module" yaml:"module"`
+	Modules []string `json:"modules" yaml:"modules"`
 }
 
 type ExternalImportConfig struct {
@@ -213,6 +229,20 @@ func (c Config) Validate() error {
 		}
 		if owner.Table == "" && len(owner.Tables) == 0 {
 			return fmt.Errorf("config analysis.table_owners[%d].table or tables is required", i)
+		}
+	}
+	for i, rule := range c.Analysis.SQLTableReferences {
+		if rule.Name == "" {
+			return fmt.Errorf("config analysis.sql_table_references[%d].name is required", i)
+		}
+		if rule.Path == "" && len(rule.Paths) == 0 {
+			return fmt.Errorf("config analysis.sql_table_references[%d].path or paths is required", i)
+		}
+		if rule.MaxOwnersPerStatement < 0 {
+			return fmt.Errorf("config analysis.sql_table_references[%d].max_owners_per_statement must be non-negative", i)
+		}
+		if !tableOwnerTargetConfigured(rule.Allow) && !tableOwnerTargetConfigured(rule.Disallow) && rule.MaxOwnersPerStatement == 0 {
+			return fmt.Errorf("config analysis.sql_table_references[%d] must configure allow, disallow, or max_owners_per_statement", i)
 		}
 	}
 	for i, external := range c.Analysis.ExternalImports {
